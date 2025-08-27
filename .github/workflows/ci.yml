@@ -1,0 +1,187 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, '3.10']
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements_test.txt
+    
+    - name: Lint with flake8
+      run: |
+        # Install flake8
+        pip install flake8
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=100 --statistics
+    
+    - name: Run unit tests
+      run: |
+        python run_tests.py --unit --coverage --exitfirst
+    
+    - name: Run integration tests (non-slow)
+      run: |
+        python run_tests.py --integration --fast --exitfirst
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  performance-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v3
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements_test.txt
+    
+    - name: Run performance benchmarks
+      run: |
+        python run_tests.py --performance --verbose
+    
+    - name: Store benchmark results
+      uses: benchmark-action/github-action-benchmark@v1
+      if: github.ref == 'refs/heads/main'
+      with:
+        tool: 'pytest'
+        output-file-path: benchmark_results.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+
+  code-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v3
+      with:
+        python-version: 3.9
+    
+    - name: Install code quality tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install black isort flake8 mypy
+    
+    - name: Check code formatting with Black
+      run: |
+        black --check --diff scripts/ tests/ *.py --line-length 100
+    
+    - name: Check import sorting with isort
+      run: |
+        isort --check-only --diff scripts/ tests/ *.py --profile black
+    
+    - name: Type checking with mypy
+      run: |
+        mypy scripts/ --ignore-missing-imports --no-strict-optional
+      continue-on-error: true  # Type checking is advisory
+
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v3
+      with:
+        python-version: 3.9
+    
+    - name: Install security scanning tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install safety bandit
+    
+    - name: Check for known security vulnerabilities
+      run: |
+        safety check
+      continue-on-error: true
+    
+    - name: Run Bandit security linter
+      run: |
+        bandit -r scripts/ -f json -o bandit-report.json
+      continue-on-error: true
+    
+    - name: Upload Bandit results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: bandit-results
+        path: bandit-report.json
+
+  experiments:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v3
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run smoke test experiments
+      run: |
+        # Run minimal experiments to verify pipeline works
+        timeout 300 python scripts/experiments/main_experiment_pipeline.py \
+          --experiment exp_1_accuracy_fairness \
+          --output-dir ci_results || true
+    
+    - name: Upload experiment artifacts
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: ci-experiment-results
+        path: ci_results/
+        retention-days: 7
