@@ -54,12 +54,12 @@ with debug_experiment("my_experiment") as debug:
 
 ## 📚 참고
 
-- 실험 타입/파라미터: [`main/experimental_config.py`](main/experimental_config.py)
+- 실험 타입/파라미터: [`experimental_config.py`](experimental_config.py)
 - 베이스라인: [`scripts/baselines/`](scripts/baselines/)
 - 데이터 로더/메트릭: [`scripts/utils/data_loader.py`](scripts/utils/data_loader.py), [`scripts/utils/metrics.py`](scripts/utils/metrics.py)
 - 상세 예제/고급 사용법:  
-  [`main/scripts/automation/README.md`](scripts/automation),  
-  [`main/scripts/debugging/README.md`](scripts/debugging)
+  [`scripts/automation/README.md`](scripts/automation),  
+  [`scripts/debugging/README.md`](scripts/debugging)
 
 ---
 
