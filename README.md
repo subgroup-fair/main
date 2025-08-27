@@ -58,8 +58,8 @@ with debug_experiment("my_experiment") as debug:
 - 베이스라인: [`scripts/baselines/`](scripts/baselines/)
 - 데이터 로더/메트릭: [`scripts/utils/data_loader.py`](scripts/utils/data_loader.py), [`scripts/utils/metrics.py`](scripts/utils/metrics.py)
 - 상세 예제/고급 사용법:  
-  [`main/scripts/automation/README.md`](scripts/automation/README.md),  
-  [`main/scripts/debugging/README.md`](scripts/debugging/README.md)
+  [`main/scripts/automation/README.md`](scripts/automation),  
+  [`main/scripts/debugging/README.md`](scripts/debugging)
 
 ---
 
