@@ -4,19 +4,19 @@
 
 ## 📁 주요 폴더 구조
 
-- `main/scripts/automation/`  
+- `scripts/automation/`  
   - 실험 오케스트레이션, 병렬 실행, 리소스 모니터링, 대시보드, 결과 검증, 재현성 관리  
-- `main/scripts/debugging/`  
+- `scripts/debugging/`  
   - 자동 오류 탐지, 실행 추적, 데이터 품질 검사, 자가치유, 웹 기반 탐색기  
 - `scripts/baselines/`  
   - 베이스라인 알고리즘 구현  
 - `scripts/utils/`  
   - 데이터 로딩, 메트릭 계산 등 유틸리티  
-- `data/`  
+- `../data/`  
   - 원본 및 전처리 데이터  
-- `results/`  
+- `../results/`  
   - 실험 결과, 로그, 플롯  
-- `tests/`  
+- `../tests/`  
   - 단위/통합 테스트 코드
 
 ## 🚀 빠른 시작
