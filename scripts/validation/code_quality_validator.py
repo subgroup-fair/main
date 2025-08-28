@@ -16,6 +16,22 @@ from typing import Dict, List, Any, Optional, Tuple, Set, Union
 from dataclasses import dataclass
 from datetime import datetime
 import logging
+import pickle
+import token
+import tokenize
+import io
+from collections import defaultdict
+
+# Machine learning libraries for AI-based analysis
+try:
+    import numpy as np
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.ensemble import IsolationForest
+    from sklearn.cluster import DBSCAN
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    np = None
 
 # Security scanning libraries with fallbacks
 try:
@@ -85,6 +101,27 @@ class CodeMetrics:
     maintainability_index: float
     halstead_difficulty: float
     raw_metrics: Dict[str, Any]
+
+@dataclass
+class AICodeAnalysis:
+    """AI-based code analysis result"""
+    complexity_prediction: float
+    bug_probability: float
+    maintainability_score: float
+    code_smell_indicators: List[str]
+    optimization_suggestions: List[str]
+    similarity_score: float
+    anomaly_score: float
+
+@dataclass
+class AutoOptimizationSuggestion:
+    """Automatic code optimization suggestion"""
+    optimization_type: str
+    original_code: str
+    optimized_code: str
+    expected_improvement: Dict[str, float]
+    confidence: float
+    applicable_lines: List[int]
 
 class AutomaticCodeReviewer:
     """Automatic code review with comprehensive checks"""
@@ -917,6 +954,106 @@ class PerformanceOptimizer:
         # Heuristic: uppercase or common global patterns
         return name.isupper() or name in ['sys', 'os', 'math', 'random', 'json']
 
+class AICodeAnalyzer:
+    """AI-based code analysis and optimization"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger("ai_code_analyzer")
+        self._initialize_models()
+    
+    def _initialize_models(self):
+        """Initialize AI models for code analysis"""
+        
+        if ML_AVAILABLE:
+            # Initialize TF-IDF vectorizer for code similarity
+            self.tfidf_vectorizer = TfidfVectorizer(
+                max_features=1000,
+                stop_words=None,  # Don't use stop words for code
+                ngram_range=(1, 3),
+                token_pattern=r'[a-zA-Z_][a-zA-Z0-9_]*'
+            )
+            
+            # Initialize anomaly detection model
+            self.anomaly_detector = IsolationForest(
+                contamination=0.1,
+                random_state=42
+            )
+            
+            self.models_initialized = True
+        else:
+            self.models_initialized = False
+            self.logger.warning("ML libraries not available - AI analysis will be limited")
+    
+    def analyze_code_ai(self, file_paths: List[str]) -> Dict[str, AICodeAnalysis]:
+        """Perform AI-based code analysis"""
+        
+        analyses = {}
+        
+        if not self.models_initialized:
+            self.logger.warning("AI models not initialized - returning empty analysis")
+            return analyses
+        
+        try:
+            # Collect code features from all files
+            all_code_features = []
+            file_features = {}
+            
+            for file_path in file_paths:
+                features = self._extract_code_features(file_path)
+                if features:
+                    all_code_features.append(features['text_features'])
+                    file_features[file_path] = features
+            
+            if len(all_code_features) < 2:
+                self.logger.warning("Insufficient code for AI analysis")
+                return analyses
+            
+            # Train models on collected features
+            tfidf_matrix = self.tfidf_vectorizer.fit_transform(all_code_features)
+            self.anomaly_detector.fit(tfidf_matrix.toarray())
+            
+            # Analyze each file
+            for i, file_path in enumerate(file_paths):
+                if file_path in file_features:
+                    analysis = self._analyze_single_file(file_path, file_features[file_path], tfidf_matrix[i])
+                    analyses[file_path] = analysis
+            
+        except Exception as e:
+            self.logger.error(f"AI code analysis failed: {e}")
+        
+        return analyses
+    
+    def _extract_code_features(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """Extract features from code file"""
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                code_content = f.read()
+            
+            # Parse AST
+            tree = ast.parse(code_content)
+            
+            # Extract structural features
+            features = {
+                'lines_of_code': len(code_content.split('\n')),
+                'num_functions': len([n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]),
+                'num_classes': len([n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]),
+                'num_imports': len([n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]),
+                'max_nesting': self._calculate_max_nesting(tree),
+                'cyclomatic_complexity': self._calculate_cyclomatic_complexity(tree),
+                'text_features': code_content  # For TF-IDF
+            }
+            
+            # Extract token-based features
+            token_features = self._extract_token_features(code_content)
+            features.update(token_features)
+            
+            return features
+            
+        except Exception as e:
+            self.logger.error(f"Feature extraction failed for {file_path}: {e}")
+            return None
+
 class SecurityScanner:
     """Scan code for security vulnerabilities"""
     
@@ -1107,6 +1244,18 @@ class CodeQualityValidator:
         self.practices_verifier = BestPracticesVerifier()
         self.performance_optimizer = PerformanceOptimizer()
         self.security_scanner = SecurityScanner()
+        
+        # Initialize AI components
+        try:
+            from .ai_code_analyzer import AICodeAnalyzer, AutoOptimizer
+            self.ai_analyzer = AICodeAnalyzer()
+            self.auto_optimizer = AutoOptimizer()
+            self.ai_available = True
+        except ImportError:
+            self.ai_analyzer = None
+            self.auto_optimizer = None
+            self.ai_available = False
+            self.logger.warning("AI code analysis not available - install scikit-learn for advanced features")
     
     def validate_code_quality(self, code_paths: List[str], 
                             include_security: bool = True,
@@ -1152,7 +1301,22 @@ class CodeQualityValidator:
             security_results = self.security_scanner.scan_security(code_paths)
             validation_results["security_scan"] = security_results
         
-        # 5. Overall assessment
+        # 5. AI-based analysis
+        if self.ai_available:
+            self.logger.info("Performing AI-based code analysis")
+            ai_results = self.ai_analyzer.analyze_code_ai(code_paths)
+            validation_results["ai_analysis"] = {path: self._serialize_ai_analysis(analysis) 
+                                                for path, analysis in ai_results.items()}
+            
+            # 6. Auto-optimization suggestions
+            self.logger.info("Generating optimization suggestions")
+            optimization_results = self.auto_optimizer.generate_optimization_suggestions(code_paths)
+            validation_results["optimization_suggestions"] = {
+                path: [self._serialize_optimization_suggestion(sugg) for sugg in suggestions]
+                for path, suggestions in optimization_results.items()
+            }
+        
+        # 7. Overall assessment
         validation_results["overall_assessment"] = self._generate_overall_code_assessment(validation_results)
         
         return validation_results
@@ -1208,6 +1372,22 @@ class CodeQualityValidator:
         performance_score = validation_results.get("performance_analysis", {}).get("overall_performance_score", 70)
         security_score = validation_results.get("security_scan", {}).get("security_score", 100)
         
+        # AI analysis bonus
+        ai_bonus = 0
+        if "ai_analysis" in validation_results:
+            ai_analyses = validation_results["ai_analysis"]
+            if ai_analyses:
+                avg_maintainability = sum(analysis.get("maintainability_score", 70) 
+                                        for analysis in ai_analyses.values()) / len(ai_analyses)
+                ai_bonus = min(10, (avg_maintainability - 70) / 3)  # Up to 10 point bonus
+        
+        # Optimization suggestions bonus
+        opt_bonus = 0
+        if "optimization_suggestions" in validation_results:
+            total_suggestions = sum(len(suggestions) for suggestions in validation_results["optimization_suggestions"].values())
+            if total_suggestions > 0:
+                opt_bonus = min(5, total_suggestions)  # Up to 5 point bonus for having suggestions
+        
         # Weighted overall score
         weights = {"review": 0.3, "practices": 0.25, "performance": 0.2, "security": 0.25}
         overall_score = (
@@ -1215,7 +1395,7 @@ class CodeQualityValidator:
             practices_score * weights["practices"] +
             performance_score * weights["performance"] +
             security_score * weights["security"]
-        )
+        ) + ai_bonus + opt_bonus
         
         assessment["overall_score"] = overall_score
         
@@ -1241,6 +1421,12 @@ class CodeQualityValidator:
         if performance_score >= 85:
             assessment["key_strengths"].append("Good performance characteristics")
         
+        if ai_bonus > 5:
+            assessment["key_strengths"].append("High AI-assessed code quality")
+        
+        if opt_bonus > 2:
+            assessment["key_strengths"].append("Multiple optimization opportunities identified")
+        
         # Critical issues
         critical_issues = validation_results["code_review"]["issues_by_severity"].get("critical", 0)
         if critical_issues > 0:
@@ -1264,6 +1450,24 @@ class CodeQualityValidator:
         if security_score < 90:
             assessment["improvement_recommendations"].append("Address security vulnerabilities")
         
+        # AI-based recommendations
+        if "ai_analysis" in validation_results:
+            ai_issues = 0
+            for analysis in validation_results["ai_analysis"].values():
+                if analysis.get("bug_probability", 0) > 70:
+                    ai_issues += 1
+                if analysis.get("maintainability_score", 100) < 60:
+                    ai_issues += 1
+            
+            if ai_issues > 0:
+                assessment["improvement_recommendations"].append(f"Address {ai_issues} AI-detected code quality issues")
+        
+        # Optimization recommendations
+        if "optimization_suggestions" in validation_results:
+            total_suggestions = sum(len(suggestions) for suggestions in validation_results["optimization_suggestions"].values())
+            if total_suggestions > 5:
+                assessment["improvement_recommendations"].append(f"Consider implementing {total_suggestions} optimization suggestions")
+        
         return assessment
     
     def _calculate_review_score(self, review_results: Dict[str, Any]) -> float:
@@ -1279,3 +1483,28 @@ class CodeQualityValidator:
         score = max(0, 100 - total_penalty)
         
         return score
+    
+    def _serialize_ai_analysis(self, analysis: AICodeAnalysis) -> Dict[str, Any]:
+        """Serialize AI code analysis result"""
+        
+        return {
+            "complexity_prediction": analysis.complexity_prediction,
+            "bug_probability": analysis.bug_probability,
+            "maintainability_score": analysis.maintainability_score,
+            "code_smell_indicators": analysis.code_smell_indicators,
+            "optimization_suggestions": analysis.optimization_suggestions,
+            "similarity_score": analysis.similarity_score,
+            "anomaly_score": analysis.anomaly_score
+        }
+    
+    def _serialize_optimization_suggestion(self, suggestion: AutoOptimizationSuggestion) -> Dict[str, Any]:
+        """Serialize optimization suggestion"""
+        
+        return {
+            "optimization_type": suggestion.optimization_type,
+            "original_code": suggestion.original_code,
+            "optimized_code": suggestion.optimized_code,
+            "expected_improvement": suggestion.expected_improvement,
+            "confidence": suggestion.confidence,
+            "applicable_lines": suggestion.applicable_lines
+        }

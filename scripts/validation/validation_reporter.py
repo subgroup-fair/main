@@ -645,6 +645,20 @@ class ValidationReporter:
         self.compliance_reporter = ComplianceReporter()
         self.power_reporter = PowerAnalysisReporter()
         self.reproducibility_assessor = ReproducibilityAssessor()
+        
+        # Initialize advanced components
+        try:
+            from .interactive_dashboard import InteractiveDashboardGenerator
+            from .advanced_visualization import AdvancedVisualizationEngine
+            
+            self.dashboard_generator = InteractiveDashboardGenerator()
+            self.viz_engine = AdvancedVisualizationEngine()
+            self.advanced_available = True
+        except ImportError as e:
+            self.logger.warning(f"Advanced visualization components not available: {e}")
+            self.dashboard_generator = None
+            self.viz_engine = None
+            self.advanced_available = False
     
     def generate_comprehensive_report(self, validation_results: Dict[str, Any],
                                     experiment_name: str = "Unknown Experiment",
@@ -668,6 +682,26 @@ class ValidationReporter:
             "detailed_findings": self._extract_detailed_findings(validation_results),
             "action_plan": self._generate_action_plan(validation_results)
         }
+        
+        # Add advanced visualizations if available
+        if self.advanced_available and include_visualizations:
+            try:
+                # Generate advanced visualization suite
+                viz_suite = self.viz_engine.create_comprehensive_visualization_suite(
+                    validation_results, experiment_name
+                )
+                comprehensive_report["advanced_visualizations"] = viz_suite
+                
+                # Configure interactive dashboard
+                dashboard_config = self.dashboard_generator.create_dashboard_config(
+                    validation_results, experiment_name
+                )
+                comprehensive_report["dashboard_config"] = dashboard_config
+                
+                self.logger.info("Advanced visualizations and dashboard config added to report")
+            except Exception as e:
+                self.logger.error(f"Error adding advanced visualizations: {e}")
+                comprehensive_report["advanced_visualizations_error"] = str(e)
         
         # Add visualizations if requested
         if include_visualizations and PLOTTING_AVAILABLE:
@@ -860,6 +894,68 @@ class ValidationReporter:
         except Exception as e:
             self.logger.error(f"Error creating scores chart: {e}")
             return None
+    
+    def launch_interactive_dashboard(self, validation_results: Dict[str, Any],
+                                   experiment_name: str = "Unknown Experiment",
+                                   port: int = 8050, debug: bool = False) -> Optional[str]:
+        """Launch interactive dashboard for validation results"""
+        
+        if not self.advanced_available or not self.dashboard_generator:
+            self.logger.warning("Interactive dashboard not available - advanced components not loaded")
+            return None
+            
+        try:
+            # Launch dashboard
+            dashboard_url = self.dashboard_generator.launch_dashboard(
+                validation_results, experiment_name, port=port, debug=debug
+            )
+            
+            self.logger.info(f"Interactive dashboard launched at: {dashboard_url}")
+            return dashboard_url
+            
+        except Exception as e:
+            self.logger.error(f"Error launching interactive dashboard: {e}")
+            return None
+    
+    def export_advanced_visualizations(self, validation_results: Dict[str, Any],
+                                     experiment_name: str = "Unknown Experiment",
+                                     output_formats: List[str] = None) -> Dict[str, str]:
+        """Export advanced visualizations to multiple formats"""
+        
+        if not self.advanced_available or not self.viz_engine:
+            self.logger.warning("Advanced visualizations not available - components not loaded")
+            return {}
+            
+        if output_formats is None:
+            output_formats = ['html', 'png', 'pdf']
+            
+        exported_files = {}
+        
+        try:
+            # Generate comprehensive visualization suite
+            viz_suite = self.viz_engine.create_comprehensive_visualization_suite(
+                validation_results, experiment_name
+            )
+            
+            # Export in requested formats
+            for format_type in output_formats:
+                export_path = self.output_dir / f"{experiment_name.replace(' ', '_')}_visualizations.{format_type}"
+                
+                success = self.viz_engine.export_visualization_suite(
+                    viz_suite, str(export_path), format_type
+                )
+                
+                if success:
+                    exported_files[format_type] = str(export_path)
+                    self.logger.info(f"Exported visualizations to {format_type}: {export_path}")
+                else:
+                    self.logger.warning(f"Failed to export visualizations to {format_type}")
+            
+            return exported_files
+            
+        except Exception as e:
+            self.logger.error(f"Error exporting advanced visualizations: {e}")
+            return {}
     
     def _fig_to_base64(self, fig) -> str:
         """Convert plotly figure to base64 string"""

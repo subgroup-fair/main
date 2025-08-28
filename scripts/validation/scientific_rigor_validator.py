@@ -22,9 +22,27 @@ try:
     from scipy import stats
     import sklearn.metrics as metrics
     from sklearn.model_selection import cross_val_score
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA
+    from sklearn.cluster import KMeans
     SCIPY_SKLEARN_AVAILABLE = True
 except ImportError:
     SCIPY_SKLEARN_AVAILABLE = False
+
+# Network analysis for metadata relationships
+try:
+    import networkx as nx
+    NETWORKX_AVAILABLE = True
+except ImportError:
+    NETWORKX_AVAILABLE = False
+
+# Advanced bias detection libraries
+try:
+    from fairlearn.metrics import demographic_parity_difference, equalized_odds_difference
+    from fairlearn.reductions import ExponentiatedGradient
+    FAIRLEARN_AVAILABLE = True
+except ImportError:
+    FAIRLEARN_AVAILABLE = False
 
 @dataclass
 class BiasDetection:
@@ -67,6 +85,39 @@ class PeerReviewItem:
     details: str
     suggestions: List[str] = None
     priority: str = 'medium'
+
+@dataclass
+class AdvancedBiasDetection:
+    """Advanced bias detection result"""
+    bias_category: str
+    bias_subcategory: str
+    statistical_evidence: Dict[str, Any]
+    demographic_analysis: Dict[str, Any]
+    fairness_metrics: Dict[str, Any]
+    severity_score: float
+    impact_assessment: str
+    mitigation_strategies: List[str]
+
+@dataclass
+class MetadataValidation:
+    """Metadata validation result"""
+    completeness_score: float
+    consistency_score: float
+    quality_issues: List[str]
+    missing_fields: List[str]
+    inconsistent_fields: List[str]
+    recommendations: List[str]
+    metadata_graph_analysis: Optional[Dict[str, Any]] = None
+
+@dataclass
+class CausalInferenceValidation:
+    """Causal inference validation result"""
+    confounding_variables: List[str]
+    mediation_analysis: Dict[str, Any]
+    instrumental_variables: List[str]
+    causal_assumptions: Dict[str, bool]
+    validity_threats: List[str]
+    causal_graph_issues: List[str]
 
 class MethodologyComplianceChecker:
     """Check compliance with research methodology standards"""
@@ -1240,6 +1291,23 @@ class ScientificRigorValidator:
         self.bias_detector = BiasDetector()
         self.reproducibility_tester = ReproducibilityTester()
         self.peer_review_preparer = PeerReviewPreparer()
+        
+        # Initialize advanced components
+        try:
+            from .advanced_bias_detector import AdvancedBiasDetector
+            from .metadata_validator import MetadataValidator
+            from .causal_inference_validator import CausalInferenceValidator
+            
+            self.advanced_bias_detector = AdvancedBiasDetector()
+            self.metadata_validator = MetadataValidator()
+            self.causal_validator = CausalInferenceValidator()
+            self.advanced_available = True
+        except ImportError as e:
+            self.logger.warning(f"Advanced validation components not available: {e}")
+            self.advanced_bias_detector = None
+            self.metadata_validator = None
+            self.causal_validator = None
+            self.advanced_available = False
     
     def validate_scientific_rigor(self, experiment_config: Dict[str, Any],
                                  experiment_data: Dict[str, Any] = None,
@@ -1288,7 +1356,36 @@ class ScientificRigorValidator:
         )
         validation_results["peer_review_readiness"] = peer_review_results
         
-        # 5. Overall assessment
+        # 5. Advanced analysis (if available)
+        if self.advanced_available:
+            # Advanced bias detection
+            self.logger.info("Performing advanced bias detection")
+            advanced_bias_results = self.advanced_bias_detector.detect_advanced_biases(
+                experiment_data.get("data", {}),
+                experiment_data.get("protected_attributes", []),
+                experiment_data.get("target_variable")
+            )
+            validation_results["advanced_bias_detection"] = {
+                bias_name: self._serialize_advanced_bias(bias)
+                for bias_name, bias in advanced_bias_results.items()
+            }
+            
+            # Metadata validation
+            if "metadata" in experiment_data:
+                self.logger.info("Validating metadata")
+                metadata_results = self.metadata_validator.validate_metadata(experiment_data["metadata"])
+                validation_results["metadata_validation"] = self._serialize_metadata_validation(metadata_results)
+            
+            # Causal inference validation
+            if "experimental_design" in experiment_data:
+                self.logger.info("Validating causal inference")
+                causal_results = self.causal_validator.validate_causal_inference(
+                    experiment_data["experimental_design"],
+                    experiment_data.get("data")
+                )
+                validation_results["causal_inference_validation"] = self._serialize_causal_validation(causal_results)
+        
+        # 6. Overall assessment
         validation_results["overall_rigor_assessment"] = self._generate_overall_rigor_assessment(validation_results)
         
         return validation_results
@@ -1394,4 +1491,61 @@ class ScientificRigorValidator:
         if bias_penalty > 10:
             assessment["improvement_recommendations"].append("Address detected biases")
         
+        # Advanced analysis recommendations (if available)
+        if self.advanced_available and "advanced_bias_detection" in validation_results:
+            high_severity_biases = [bias for bias in validation_results["advanced_bias_detection"].values()
+                                   if bias.get("severity_score", 0) > 0.7]
+            if high_severity_biases:
+                assessment["improvement_recommendations"].append(f"Address {len(high_severity_biases)} high-severity biases")
+        
+        if "metadata_validation" in validation_results:
+            missing_critical = len([field for field in validation_results["metadata_validation"].get("missing_fields", [])
+                                   if "critical" in field])
+            if missing_critical > 0:
+                assessment["improvement_recommendations"].append(f"Add {missing_critical} missing critical metadata fields")
+        
+        if "causal_inference_validation" in validation_results:
+            validity_threats = len(validation_results["causal_inference_validation"].get("validity_threats", []))
+            if validity_threats > 3:
+                assessment["improvement_recommendations"].append(f"Address {validity_threats} threats to causal validity")
+        
         return assessment
+    
+    def _serialize_advanced_bias(self, bias: AdvancedBiasDetection) -> Dict[str, Any]:
+        """Serialize advanced bias detection result"""
+        
+        return {
+            "bias_category": bias.bias_category,
+            "bias_subcategory": bias.bias_subcategory,
+            "statistical_evidence": bias.statistical_evidence,
+            "demographic_analysis": bias.demographic_analysis,
+            "fairness_metrics": bias.fairness_metrics,
+            "severity_score": bias.severity_score,
+            "impact_assessment": bias.impact_assessment,
+            "mitigation_strategies": bias.mitigation_strategies
+        }
+    
+    def _serialize_metadata_validation(self, metadata_val: MetadataValidation) -> Dict[str, Any]:
+        """Serialize metadata validation result"""
+        
+        return {
+            "completeness_score": metadata_val.completeness_score,
+            "consistency_score": metadata_val.consistency_score,
+            "quality_issues": metadata_val.quality_issues,
+            "missing_fields": metadata_val.missing_fields,
+            "inconsistent_fields": metadata_val.inconsistent_fields,
+            "recommendations": metadata_val.recommendations,
+            "metadata_graph_analysis": metadata_val.metadata_graph_analysis
+        }
+    
+    def _serialize_causal_validation(self, causal_val: CausalInferenceValidation) -> Dict[str, Any]:
+        """Serialize causal inference validation result"""
+        
+        return {
+            "confounding_variables": causal_val.confounding_variables,
+            "mediation_analysis": causal_val.mediation_analysis,
+            "instrumental_variables": causal_val.instrumental_variables,
+            "causal_assumptions": causal_val.causal_assumptions,
+            "validity_threats": causal_val.validity_threats,
+            "causal_graph_issues": causal_val.causal_graph_issues
+        }

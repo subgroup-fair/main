@@ -22,6 +22,9 @@ try:
     from statsmodels.stats.power import TTestPower, FTestAnovaPower
     from statsmodels.stats.contingency_tables import mcnemar
     from statsmodels.stats.meta_analysis import effectsize_smd
+    from statsmodels.stats.diagnostic import lilliefors
+    from statsmodels.stats.multitest import multipletests
+    from statsmodels.tsa.stattools import adfuller
     STATSMODELS_AVAILABLE = True
 except ImportError:
     STATSMODELS_AVAILABLE = False
@@ -32,6 +35,14 @@ try:
     PINGOUIN_AVAILABLE = True
 except ImportError:
     PINGOUIN_AVAILABLE = False
+
+# Meta-analysis libraries
+try:
+    from scipy.stats import combine_pvalues
+    from scipy.special import ndtri
+    META_ANALYSIS_AVAILABLE = True
+except ImportError:
+    META_ANALYSIS_AVAILABLE = False
 
 @dataclass
 class StatisticalTest:
@@ -80,6 +91,32 @@ class PowerAnalysis:
     minimum_sample_size: Optional[int] = None
     minimum_effect_size: Optional[float] = None
     power_curve_data: Optional[Dict] = None
+
+@dataclass
+class MetaAnalysisResult:
+    """Meta-analysis result"""
+    overall_effect_size: float
+    confidence_interval: Tuple[float, float]
+    z_score: float
+    p_value: float
+    heterogeneity_i2: float
+    heterogeneity_q: float
+    heterogeneity_p: float
+    number_of_studies: int
+    total_sample_size: int
+    forest_plot_data: Optional[Dict] = None
+
+@dataclass
+class BayesianAnalysis:
+    """Bayesian analysis result"""
+    bayes_factor: float
+    posterior_mean: float
+    posterior_std: float
+    credible_interval: Tuple[float, float]
+    evidence_strength: str
+    probability_direction: float
+    rope_percentage: float
+    interpretation: str
 
 class ResultsConsistencyChecker:
     """Check consistency of results across multiple experimental runs"""
@@ -738,6 +775,403 @@ class PowerAnalysisValidator:
         
         return power_data
 
+class MetaAnalyzer:
+    """Perform meta-analysis of multiple studies"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger("meta_analyzer")
+    
+    def perform_meta_analysis(self, studies: List[Dict[str, Any]], 
+                            method: str = "fixed") -> MetaAnalysisResult:
+        """Perform meta-analysis of multiple studies"""
+        
+        try:
+            # Extract effect sizes and sample sizes
+            effect_sizes = []
+            sample_sizes = []
+            variances = []
+            
+            for study in studies:
+                es = study.get("effect_size")
+                n = study.get("sample_size", 0)
+                se = study.get("standard_error")
+                
+                if es is not None and n > 0:
+                    effect_sizes.append(es)
+                    sample_sizes.append(n)
+                    
+                    if se is not None:
+                        variances.append(se ** 2)
+                    else:
+                        # Approximate variance from sample size
+                        variances.append(4.0 / n)  # Rough approximation
+            
+            if len(effect_sizes) < 2:
+                raise ValueError("Need at least 2 studies for meta-analysis")
+            
+            effect_sizes = np.array(effect_sizes)
+            variances = np.array(variances)
+            weights = 1.0 / variances
+            
+            # Calculate overall effect size
+            if method == "fixed":
+                overall_es = np.sum(weights * effect_sizes) / np.sum(weights)
+                overall_var = 1.0 / np.sum(weights)
+            else:  # random effects
+                # Simple random effects approximation
+                Q = np.sum(weights * (effect_sizes - overall_es) ** 2)
+                tau2 = max(0, (Q - len(effect_sizes) + 1) / (np.sum(weights) - np.sum(weights**2) / np.sum(weights)))
+                weights_re = 1.0 / (variances + tau2)
+                overall_es = np.sum(weights_re * effect_sizes) / np.sum(weights_re)
+                overall_var = 1.0 / np.sum(weights_re)
+            
+            overall_se = np.sqrt(overall_var)
+            
+            # Calculate confidence interval
+            z_critical = stats.norm.ppf(0.975)  # 95% CI
+            ci_lower = overall_es - z_critical * overall_se
+            ci_upper = overall_es + z_critical * overall_se
+            
+            # Calculate z-score and p-value
+            z_score = overall_es / overall_se
+            p_value = 2 * (1 - stats.norm.cdf(abs(z_score)))
+            
+            # Calculate heterogeneity statistics
+            Q = np.sum(weights * (effect_sizes - overall_es) ** 2)
+            df = len(effect_sizes) - 1
+            Q_p = 1 - stats.chi2.cdf(Q, df) if df > 0 else 1.0
+            I2 = max(0, (Q - df) / Q) * 100 if Q > 0 else 0
+            
+            return MetaAnalysisResult(
+                overall_effect_size=overall_es,
+                confidence_interval=(ci_lower, ci_upper),
+                z_score=z_score,
+                p_value=p_value,
+                heterogeneity_i2=I2,
+                heterogeneity_q=Q,
+                heterogeneity_p=Q_p,
+                number_of_studies=len(studies),
+                total_sample_size=sum(sample_sizes)
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Meta-analysis failed: {e}")
+            return MetaAnalysisResult(
+                overall_effect_size=0,
+                confidence_interval=(0, 0),
+                z_score=0,
+                p_value=1,
+                heterogeneity_i2=0,
+                heterogeneity_q=0,
+                heterogeneity_p=1,
+                number_of_studies=0,
+                total_sample_size=0
+            )
+    
+    def publication_bias_tests(self, studies: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Test for publication bias"""
+        
+        bias_results = {
+            "egger_test": None,
+            "begg_test": None,
+            "funnel_plot_asymmetry": None,
+            "fail_safe_n": None
+        }
+        
+        try:
+            effect_sizes = np.array([s.get("effect_size", 0) for s in studies])
+            sample_sizes = np.array([s.get("sample_size", 1) for s in studies])
+            standard_errors = 1.0 / np.sqrt(sample_sizes)  # Approximation
+            
+            if len(effect_sizes) >= 3:
+                # Egger's test (regression of effect size on standard error)
+                slope, intercept, r_value, p_value, std_err = stats.linregress(standard_errors, effect_sizes)
+                
+                bias_results["egger_test"] = {
+                    "intercept": intercept,
+                    "p_value": p_value,
+                    "significant_bias": p_value < 0.05
+                }
+                
+                # Begg's test (rank correlation)
+                if len(effect_sizes) >= 5:
+                    correlation, begg_p = stats.spearmanr(effect_sizes, standard_errors)
+                    bias_results["begg_test"] = {
+                        "correlation": correlation,
+                        "p_value": begg_p,
+                        "significant_bias": begg_p < 0.05
+                    }
+                
+                # Fail-safe N calculation
+                significant_studies = sum(1 for s in studies if s.get("p_value", 1) < 0.05)
+                if significant_studies > 0:
+                    fail_safe_n = max(0, 5 * significant_studies + 10 - len(studies))
+                    bias_results["fail_safe_n"] = fail_safe_n
+            
+        except Exception as e:
+            self.logger.error(f"Publication bias test failed: {e}")
+        
+        return bias_results
+
+class BayesianAnalyzer:
+    """Bayesian statistical analysis"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger("bayesian_analyzer")
+    
+    def bayesian_t_test(self, group1: List[float], group2: List[float], 
+                       prior_scale: float = 0.707) -> BayesianAnalysis:
+        """Bayesian t-test using default priors"""
+        
+        try:
+            # Calculate basic statistics
+            n1, n2 = len(group1), len(group2)
+            m1, m2 = np.mean(group1), np.mean(group2)
+            s1, s2 = np.std(group1, ddof=1), np.std(group2, ddof=1)
+            
+            # Pooled standard deviation
+            sp = np.sqrt(((n1-1)*s1**2 + (n2-1)*s2**2) / (n1+n2-2))
+            
+            # Effect size (Cohen's d)
+            cohens_d = (m1 - m2) / sp
+            
+            # Standard error
+            se = sp * np.sqrt(1/n1 + 1/n2)
+            
+            # t-statistic
+            t_stat = (m1 - m2) / se
+            df = n1 + n2 - 2
+            
+            # Approximate Bayes factor using BIC approximation
+            # This is a simplified approach
+            bic_null = n1 * np.log(s1**2) + n2 * np.log(s2**2)
+            bic_alt = bic_null - t_stat**2  # Simplified
+            bf10 = np.exp((bic_null - bic_alt) / 2)
+            
+            # Evidence strength
+            if bf10 > 100:
+                evidence_strength = "extreme evidence for H1"
+            elif bf10 > 30:
+                evidence_strength = "very strong evidence for H1"
+            elif bf10 > 10:
+                evidence_strength = "strong evidence for H1"
+            elif bf10 > 3:
+                evidence_strength = "moderate evidence for H1"
+            elif bf10 > 1:
+                evidence_strength = "weak evidence for H1"
+            elif bf10 > 0.33:
+                evidence_strength = "weak evidence for H0"
+            elif bf10 > 0.1:
+                evidence_strength = "moderate evidence for H0"
+            elif bf10 > 0.03:
+                evidence_strength = "strong evidence for H0"
+            else:
+                evidence_strength = "very strong evidence for H0"
+            
+            # Posterior estimates (simplified)
+            posterior_mean = cohens_d
+            posterior_std = 1 / np.sqrt(n1 + n2)  # Approximation
+            
+            # Credible interval
+            ci_lower = posterior_mean - 1.96 * posterior_std
+            ci_upper = posterior_mean + 1.96 * posterior_std
+            
+            # Probability of direction
+            prob_direction = stats.norm.cdf(0, posterior_mean, posterior_std)
+            prob_direction = max(prob_direction, 1 - prob_direction)
+            
+            # ROPE (Region of Practical Equivalence) analysis
+            rope_lower, rope_upper = -0.1, 0.1  # Small effect size
+            rope_percentage = (stats.norm.cdf(rope_upper, posterior_mean, posterior_std) - 
+                             stats.norm.cdf(rope_lower, posterior_mean, posterior_std)) * 100
+            
+            interpretation = f"Bayes factor = {bf10:.3f} ({evidence_strength})"
+            
+            return BayesianAnalysis(
+                bayes_factor=bf10,
+                posterior_mean=posterior_mean,
+                posterior_std=posterior_std,
+                credible_interval=(ci_lower, ci_upper),
+                evidence_strength=evidence_strength,
+                probability_direction=prob_direction,
+                rope_percentage=rope_percentage,
+                interpretation=interpretation
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Bayesian t-test failed: {e}")
+            return BayesianAnalysis(
+                bayes_factor=1.0,
+                posterior_mean=0,
+                posterior_std=1,
+                credible_interval=(0, 0),
+                evidence_strength="analysis failed",
+                probability_direction=0.5,
+                rope_percentage=100,
+                interpretation="Analysis failed"
+            )
+
+class AdvancedStatisticalTests:
+    """Advanced statistical testing methods"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger("advanced_stats")
+    
+    def multiple_comparison_correction(self, p_values: List[float], 
+                                     method: str = "fdr_bh") -> Dict[str, Any]:
+        """Apply multiple comparison corrections"""
+        
+        try:
+            if STATSMODELS_AVAILABLE:
+                reject, pvals_corrected, alpha_sidak, alpha_bonf = multipletests(
+                    p_values, alpha=0.05, method=method
+                )
+                
+                return {
+                    "method": method,
+                    "original_p_values": p_values,
+                    "corrected_p_values": pvals_corrected.tolist(),
+                    "rejected_null": reject.tolist(),
+                    "significant_count": sum(reject),
+                    "alpha_bonferroni": alpha_bonf,
+                    "alpha_sidak": alpha_sidak
+                }
+            else:
+                # Fallback Bonferroni correction
+                alpha_bonf = 0.05 / len(p_values)
+                corrected_p = [min(p * len(p_values), 1.0) for p in p_values]
+                reject = [p < 0.05 for p in corrected_p]
+                
+                return {
+                    "method": "bonferroni",
+                    "original_p_values": p_values,
+                    "corrected_p_values": corrected_p,
+                    "rejected_null": reject,
+                    "significant_count": sum(reject),
+                    "alpha_bonferroni": alpha_bonf
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Multiple comparison correction failed: {e}")
+            return {
+                "method": "failed",
+                "error": str(e)
+            }
+    
+    def robust_statistics(self, data: List[float]) -> Dict[str, Any]:
+        """Calculate robust statistical measures"""
+        
+        try:
+            data_array = np.array(data)
+            
+            # Basic robust statistics
+            median = np.median(data_array)
+            mad = np.median(np.abs(data_array - median))  # Median Absolute Deviation
+            iqr = np.percentile(data_array, 75) - np.percentile(data_array, 25)
+            
+            # Trimmed mean (remove 10% from each tail)
+            trim_percent = 0.1
+            trimmed_mean = stats.trim_mean(data_array, trim_percent)
+            
+            # Robust scale estimates
+            robust_std = 1.4826 * mad  # Robust standard deviation
+            
+            # Outlier detection using IQR method
+            q1 = np.percentile(data_array, 25)
+            q3 = np.percentile(data_array, 75)
+            iqr_multiplier = 1.5
+            outlier_bounds = {
+                "lower": q1 - iqr_multiplier * iqr,
+                "upper": q3 + iqr_multiplier * iqr
+            }
+            
+            outliers = data_array[(data_array < outlier_bounds["lower"]) | 
+                                (data_array > outlier_bounds["upper"])]
+            
+            return {
+                "median": median,
+                "mad": mad,
+                "iqr": iqr,
+                "trimmed_mean": trimmed_mean,
+                "robust_std": robust_std,
+                "outlier_bounds": outlier_bounds,
+                "outliers": outliers.tolist(),
+                "outlier_count": len(outliers),
+                "outlier_percentage": len(outliers) / len(data_array) * 100
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Robust statistics calculation failed: {e}")
+            return {"error": str(e)}
+    
+    def normality_tests_comprehensive(self, data: List[float]) -> Dict[str, Any]:
+        """Comprehensive normality testing"""
+        
+        try:
+            data_array = np.array(data)
+            
+            tests_results = {}
+            
+            # Shapiro-Wilk test
+            if len(data) <= 5000:
+                shapiro_stat, shapiro_p = stats.shapiro(data_array)
+                tests_results["shapiro_wilk"] = {
+                    "statistic": shapiro_stat,
+                    "p_value": shapiro_p,
+                    "is_normal": shapiro_p > 0.05
+                }
+            
+            # Kolmogorov-Smirnov test
+            ks_stat, ks_p = stats.kstest(data_array, 'norm', 
+                                        args=(np.mean(data_array), np.std(data_array)))
+            tests_results["kolmogorov_smirnov"] = {
+                "statistic": ks_stat,
+                "p_value": ks_p,
+                "is_normal": ks_p > 0.05
+            }
+            
+            # Anderson-Darling test
+            ad_result = stats.anderson(data_array, dist='norm')
+            ad_critical_value = ad_result.critical_values[2]  # 5% significance level
+            tests_results["anderson_darling"] = {
+                "statistic": ad_result.statistic,
+                "critical_value": ad_critical_value,
+                "is_normal": ad_result.statistic < ad_critical_value
+            }
+            
+            # D'Agostino's test
+            dagostino_stat, dagostino_p = stats.normaltest(data_array)
+            tests_results["dagostino"] = {
+                "statistic": dagostino_stat,
+                "p_value": dagostino_p,
+                "is_normal": dagostino_p > 0.05
+            }
+            
+            # Jarque-Bera test
+            jb_stat, jb_p = stats.jarque_bera(data_array)
+            tests_results["jarque_bera"] = {
+                "statistic": jb_stat,
+                "p_value": jb_p,
+                "is_normal": jb_p > 0.05
+            }
+            
+            # Overall assessment
+            normal_tests = [test["is_normal"] for test in tests_results.values()]
+            consensus_normal = sum(normal_tests) > len(normal_tests) / 2
+            
+            tests_results["overall_assessment"] = {
+                "tests_agreeing_normal": sum(normal_tests),
+                "total_tests": len(normal_tests),
+                "consensus_normal": consensus_normal,
+                "confidence": sum(normal_tests) / len(normal_tests)
+            }
+            
+            return tests_results
+            
+        except Exception as e:
+            self.logger.error(f"Comprehensive normality tests failed: {e}")
+            return {"error": str(e)}
+
 class StatisticalValidator:
     """Main statistical validation controller"""
     
@@ -752,6 +1186,9 @@ class StatisticalValidator:
         self.significance_tester = StatisticalSignificanceTester(alpha)
         self.effect_calculator = EffectSizeCalculator()
         self.power_analyzer = PowerAnalysisValidator(target_power, alpha)
+        self.meta_analyzer = MetaAnalyzer()
+        self.bayesian_analyzer = BayesianAnalyzer()
+        self.advanced_tests = AdvancedStatisticalTests()
         
         self.logger = logging.getLogger("statistical_validator")
     
@@ -842,7 +1279,63 @@ class StatisticalValidator:
             
             validation_results["power_analysis"] = power_results
         
-        # 5. Overall assessment
+        # 5. Meta-analysis (if multiple studies)
+        if "meta_analysis_data" in results_data:
+            self.logger.info("Performing meta-analysis")
+            meta_results = {}
+            
+            for ma_name, studies in results_data["meta_analysis_data"].items():
+                if isinstance(studies, list) and len(studies) >= 2:
+                    meta_result = self.meta_analyzer.perform_meta_analysis(studies)
+                    bias_tests = self.meta_analyzer.publication_bias_tests(studies)
+                    
+                    meta_results[ma_name] = {
+                        "meta_analysis": self._serialize_meta_analysis(meta_result),
+                        "publication_bias_tests": bias_tests
+                    }
+            
+            validation_results["meta_analysis"] = meta_results
+        
+        # 6. Bayesian analysis
+        if "bayesian_analysis_data" in results_data:
+            self.logger.info("Performing Bayesian analysis")
+            bayesian_results = {}
+            
+            for ba_name, ba_data in results_data["bayesian_analysis_data"].items():
+                if "group1" in ba_data and "group2" in ba_data:
+                    bayes_result = self.bayesian_analyzer.bayesian_t_test(
+                        ba_data["group1"], ba_data["group2"]
+                    )
+                    bayesian_results[ba_name] = self._serialize_bayesian_analysis(bayes_result)
+            
+            validation_results["bayesian_analysis"] = bayesian_results
+        
+        # 7. Advanced statistical tests
+        if "advanced_tests_data" in results_data:
+            self.logger.info("Performing advanced statistical tests")
+            advanced_results = {}
+            
+            # Multiple comparison correction
+            if "multiple_comparisons" in results_data["advanced_tests_data"]:
+                p_values = results_data["advanced_tests_data"]["multiple_comparisons"]
+                correction_result = self.advanced_tests.multiple_comparison_correction(p_values)
+                advanced_results["multiple_comparison_correction"] = correction_result
+            
+            # Robust statistics
+            if "robust_analysis" in results_data["advanced_tests_data"]:
+                for ra_name, data in results_data["advanced_tests_data"]["robust_analysis"].items():
+                    robust_result = self.advanced_tests.robust_statistics(data)
+                    advanced_results[f"robust_stats_{ra_name}"] = robust_result
+            
+            # Comprehensive normality tests
+            if "normality_tests" in results_data["advanced_tests_data"]:
+                for nt_name, data in results_data["advanced_tests_data"]["normality_tests"].items():
+                    normality_result = self.advanced_tests.normality_tests_comprehensive(data)
+                    advanced_results[f"normality_{nt_name}"] = normality_result
+            
+            validation_results["advanced_statistical_tests"] = advanced_results
+        
+        # 8. Overall assessment
         validation_results["overall_assessment"] = self._generate_overall_assessment(validation_results)
         
         return validation_results
@@ -987,3 +1480,56 @@ class StatisticalValidator:
             assessment["statistical_validity"] = "inadequate"
         
         return assessment
+    
+    def _serialize_meta_analysis(self, analysis: MetaAnalysisResult) -> Dict[str, Any]:
+        """Serialize meta-analysis result"""
+        
+        return {
+            "overall_effect_size": analysis.overall_effect_size,
+            "confidence_interval": analysis.confidence_interval,
+            "z_score": analysis.z_score,
+            "p_value": analysis.p_value,
+            "heterogeneity_i2": analysis.heterogeneity_i2,
+            "heterogeneity_q": analysis.heterogeneity_q,
+            "heterogeneity_p": analysis.heterogeneity_p,
+            "number_of_studies": analysis.number_of_studies,
+            "total_sample_size": analysis.total_sample_size,
+            "interpretation": self._interpret_meta_analysis(analysis)
+        }
+    
+    def _serialize_bayesian_analysis(self, analysis: BayesianAnalysis) -> Dict[str, Any]:
+        """Serialize Bayesian analysis result"""
+        
+        return {
+            "bayes_factor": analysis.bayes_factor,
+            "posterior_mean": analysis.posterior_mean,
+            "posterior_std": analysis.posterior_std,
+            "credible_interval": analysis.credible_interval,
+            "evidence_strength": analysis.evidence_strength,
+            "probability_direction": analysis.probability_direction,
+            "rope_percentage": analysis.rope_percentage,
+            "interpretation": analysis.interpretation
+        }
+    
+    def _interpret_meta_analysis(self, analysis: MetaAnalysisResult) -> str:
+        """Interpret meta-analysis results"""
+        
+        interpretation = f"Meta-analysis of {analysis.number_of_studies} studies "
+        interpretation += f"(N = {analysis.total_sample_size}): "
+        interpretation += f"Overall effect size = {analysis.overall_effect_size:.3f}, "
+        interpretation += f"95% CI [{analysis.confidence_interval[0]:.3f}, {analysis.confidence_interval[1]:.3f}], "
+        interpretation += f"p = {analysis.p_value:.3f}. "
+        
+        if analysis.p_value < 0.05:
+            interpretation += "Statistically significant effect. "
+        else:
+            interpretation += "Non-significant effect. "
+        
+        if analysis.heterogeneity_i2 < 25:
+            interpretation += "Low heterogeneity between studies."
+        elif analysis.heterogeneity_i2 < 75:
+            interpretation += "Moderate heterogeneity between studies."
+        else:
+            interpretation += "High heterogeneity between studies - interpret with caution."
+        
+        return interpretation
