@@ -1,4 +1,38 @@
 # Quick README
+---
+### Experiment Checklist
+실험 우선순위를 작성한 리스트입니다.. 다음 순서로 진행되고 있습니다.. 최우선목표는 어떤 결과든 뽑는 것...
+#### 실험 결과에 관하여
+- [ ] E1) 데이터: synthetic 조절변수:q
+- [ ] E2,3) 데이터: Real(A,C,D) 조절변수: n_low
+- [ ] E4) DR vs SupIPM 조절변수: lambda
+- [ ] E7,8)
+- [ ] E5,6)
+
+#### 코드 변경에 관하여
+- [ ] 현재 코드에 대한 이해, 디버깅, 신뢰성검증
+- [ ] 각 서브그룹의 샘플 수 저장하도록 만들기
+      - fairbench/__init__.py main 함수에서 조절
+- [ ] 현재 코드에 하드코딩된 부분 조절 가능하도록 변경, 조절하면서 실험
+      - gamma(n_low/n 비율)
+      - q(sensitive attribute 개수)
+      - real data에서 subgroup 하나의 샘플 개수 극단적으로 줄여보기(1,3,5,7, ...)
+- [ ] d(P_s,P_.) => d(P_s,P_s^c)
+      - metrics/supipm.py 에서 ```max_s over {0,1}^q```
+- [ ] subgroup => subgroup subset
+- [ ] ```sup_mmd_gaussian(scores, groups, V, sigma), sup_wasserstein_1d(scores, groups, V)```
+- [ ] synthetic data로 실험
+- [ ] V 구성 전략 비교
+      - 현재(서브그룹만), 원소n개짜리 서브셋만 만들기, 민감변수에 대해 0,1,all 경우로 선택 3^q
+
+#### Q1
+- [ ] DR 학습 안정화
+      - fairbench/methods/dr.py
+      - validation 활용 얼리스타핑 / discriminator 구조 변경
+
+- [ ] 결과 그림 예쁘게 만들기
+
+
 
 ---
 
