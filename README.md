@@ -24,7 +24,7 @@
 - [ ] synthetic data로 실험
 - [ ] V 구성 전략 비교
       - 현재(서브그룹만), 원소n개짜리 서브셋만 만들기, 민감변수에 대해 0,1,all 경우로 선택 3^q
-- [ ] fairness measure는 7가지 (현재 논문의 MMD, WD, DR 학습 시 썼던 \mathcal{W}에 대한 supMMD, supWD, worstSUBGROUP, avgSUBGROUP, test data에서 그룹빈도로 가중치줘서 계산된 subgroup fairness까지 추가)
+- [ ] fairness measure는 8가지 (현재 논문의 MMD, WD, DR 학습 시 썼던 \mathcal{W}에 대한 supMMD, supWD, worstSUBGROUP, avgSUBGROUP, test data에서 그룹빈도로 가중치줘서 계산된 sum, sup subgroup fairness까지 추가)
 - [ ] 22q실험 -> 오래걸리면 실용적방법 실행 -> 둘이 결과 비슷하다 리포트
 
 #### Q1
