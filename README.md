@@ -55,18 +55,30 @@
 
 ```bash
 # DR
-GPU_IDS=0,1 JOBS=6 ./run_sweep.sh dr
+CPU_IDS="0-13" GPU_IDS=0,1 JOBS=6 ./run_sweep.sh dr
 # GerryFair
-GPU_IDS=0,1 JOBS=6 X_SENSITIVE=drop ./run_sweep.sh gerryfair
+CPU_IDS="14-20" GPU_IDS=0,1 JOBS=6 X_SENSITIVE=drop ./run_sweep.sh gerryfair
 # Multicalibration
-GPU_IDS=2,3 JOBS=6 ./run_sweep.sh multicalib
+CPU_IDS="20-26" GPU_IDS=2,3 JOBS=6 ./run_sweep.sh multicalib
 # Reduction
-GPU_IDS=2,3 JOBS=6 ./run_sweep.sh reduction
+CPU_IDS="26-32" GPU_IDS=2,3 JOBS=6 ./run_sweep.sh reduction
 # Sequential
-GPU_IDS=2,3 JOBS=6 ./run_sweep.sh sequential
+CPU_IDS="32-39" GPU_IDS=2,3 JOBS=6 ./run_sweep.sh sequential
 ```
-
 - 여기서 X_SENSITIVE=drop은 f에 S를 입력 변수로 안 쓴다는 의미인데, GerryFair는 자체적으로 S를 쓴다고 알고 있어서 (확실치 않음) drop으로 넣어야 구조적 에러 없이 S를 입력 변수로 쓸 수 있을 듯.
+
+`run_sweep_synthetic.sh` 가상데이터는 따로
+```bash
+CPU_IDS="0-13" GPU_IDS=0,1 JOBS=6 ./run_sweep_synthetic.sh dr
+
+CPU_IDS="14-20" GPU_IDS=0,1 JOBS=6 X_SENSITIVE=drop ./run_sweep_synthetic.sh gerryfair
+
+CPU_IDS="20-26" GPU_IDS=2,3 JOBS=6 ./run_sweep_synthetic.sh multicalib
+
+CPU_IDS="26-32" GPU_IDS=2,3 JOBS=6 ./run_sweep_synthetic.sh reduction
+
+CPU_IDS="32-39" GPU_IDS=2,3 JOBS=6 ./run_sweep_synthetic.sh sequential
+```
 
 ### Arguments
 
