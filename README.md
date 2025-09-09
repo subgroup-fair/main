@@ -195,15 +195,33 @@ shrink_seed: shrink 샘플링에 쓸 시드.
 
     accuracy: 테스트 정확도(일반적으로 검증셋에서 임계값 튜닝 후 테스트에 평가).
 
-    supipm_rbf: RBF 커널 기반 sup-IPM(서브그룹 함수족에 대한 최악의 평균 차이; 낮을수록 좋음).
+  1-12 구현은 전부 f vs f^c or V vs V^c
 
-    supipm_w1: Lipschitz(=W1 계열) 함수족 기반 sup-IPM(예상 분포 차이; 낮을수록 좋음).
+ 1) sup_mmd_dfcols: 두 분포의 MMD.                                                                  - singleton subgroup
+ 2) sup_w1_dfcols: 두 분포의 WD.                                                                     - singleton subgroup
+ 3) sup_mmd_over_V: 전체 vs 각 subgroup 분포 MMD의 최댓값.                                           - 𝒱 (subgroup subset)
+ 4) sup_w1_over_V: 전체 vs 각 subgroup 분포 WD의 최댓값.                                             - 𝒱 (subgroup subset)
+
+ 5,6) worst/mean worst_group_spd, mean_group_spd: SPD.                                                - singleton subgroup
+ 7,8) worst/mean worst_weighted_group_spd, mean_weighted_group_spd : 그룹 빈도로 가중 평균된 SPD.          - singleton subgroup
+ 9,10) worst/mean worst_spd_over_V,mean_spd_over_V : SPD.                                                - 𝒱 (subgroup subset)
+ 11,12) worst/mean worst_weighted_spd_over_V, mean_weighted_spd_over_V: 그룹 빈도로 가중 평균된 SPD.        - 𝒱 (subgroup subset)
+  
+
+---
+    supipm_rbf: RBF 커널 기반 sup-IPM(서브그룹 함수족에 대한 최악의 평균 차이; 낮을수록 좋음). f vs all
+
+    supipm_w1: Lipschitz(=W1 계열) 함수족 기반 sup-IPM(예상 분포 차이; 낮을수록 좋음). f vs all
 
     spd_worst, spd_mean: 통계적 패리티 차이( |P(ŷ=1|g)−P(ŷ=1|g′)| )의 최악값/평균값.
+
+---
 
     fpr_worst, fpr_mean: 거짓양성률(FPR) 격차 최악/평균.
 
     mc_worst, mc_mean: 멀티캘리브레이션 위반( |E[Y−p(X) | g, bin]| ) 최악/평균.
+
+---
 
     marg_spd_worst, marg_spd_mean: 단일 속성별(주변, marginal) 서브그룹만 고려했을 때의 SPD 최악/평균(교차/결합 서브그룹은 제외).
 
