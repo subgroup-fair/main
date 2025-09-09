@@ -3,7 +3,7 @@
 ### Experiment Checklist
 실험 우선순위를 작성한 리스트입니다.. 다음 순서로 진행되고 있습니다.. 최우선목표는 어떤 결과든 뽑는 것...
 #### 실험 결과에 관하여
-- [v] 22q vs 3q
+- [x] 22q vs 3q
 - [ ] E1) 데이터: synthetic 조절변수:q
 - [ ] E2,3) 데이터: Real(A,C,D) 조절변수: n_low
 - [ ] E4) DR vs SupIPM 조절변수: lambda
@@ -18,15 +18,15 @@
 - [ ] subgroup => subgroup subset
 - [ ] ```sup_mmd_gaussian(scores, groups, V, sigma), sup_wasserstein_1d(scores, groups, V)```
 - [ ] synthetic data로 실험
-- [v] d(P_s,P_.) => d(P_s,P_s^c)
+- [x] d(P_s,P_.) => d(P_s,P_s^c)
       - metrics/supipm.py 에서 ```max_s over {0,1}^q```
-- [v] 현재 코드에 대한 이해, 디버깅, 신뢰성검증
-- [v] 각 서브그룹의 샘플 수 저장하도록 만들기
+- [x] 현재 코드에 대한 이해, 디버깅, 신뢰성검증
+- [x] 각 서브그룹의 샘플 수 저장하도록 만들기
       - fairbench/__init__.py main 함수에서 조절
-- [v] V 구성 전략 비교
+- [x] V 구성 전략 비교
       - 현재(서브그룹만), 원소n개짜리 서브셋만 만들기, 민감변수에 대해 0,1,all 경우로 선택 3^q
-- [v] fairness measure는 8가지 (현재 논문의 MMD, WD, DR 학습 시 썼던 \mathcal{W}에 대한 supMMD, supWD, worstSUBGROUP, avgSUBGROUP, test data에서 그룹빈도로 가중치줘서 계산된 sum, sup subgroup fairness까지 추가)
-- [v] 22q실험 -> 오래걸리면 실용적방법 실행 -> 둘이 결과 비슷하다 리포트
+- [x] fairness measure는 8가지 (현재 논문의 MMD, WD, DR 학습 시 썼던 \mathcal{W}에 대한 supMMD, supWD, worstSUBGROUP, avgSUBGROUP, test data에서 그룹빈도로 가중치줘서 계산된 sum, sup subgroup fairness까지 추가)
+- [x] 22q실험 -> 오래걸리면 실용적방법 실행 -> 둘이 결과 비슷하다 리포트
 
 #### Q1
 - [ ] DR 학습 안정화
