@@ -12,7 +12,7 @@
 #### 코드 변경에 관하여
 - [ ] 현재 코드에 대한 이해, 디버깅, 신뢰성검증
 - [ ] 각 서브그룹의 샘플 수 저장하도록 만들기
-      - fairbench/__init__.py main 함수에서 조절
+            - fairbench/__init__.py main 함수에서 조절
 - [ ] 현재 코드에 하드코딩된 부분 조절 가능하도록 변경, 조절하면서 실험
       - gamma(n_low/n 비율)
       - q(sensitive attribute 개수)
