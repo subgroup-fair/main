@@ -17,7 +17,7 @@ def parse_args():
     # Dataset & data options
     p.add_argument("--dataset", type=str, required=True,
                    choices=["toy_manyq", "adult", "communities", "dutch", "celebA"])
-    p.add_argument("--data_dir", type=str, default="data")
+    p.add_argument("--data_dir", type=str, default="../data/raw/")
     p.add_argument("--q", type=int, default=100, help="toy_manyq sensitive count")
 
     # X–S handling (공통)
@@ -35,10 +35,10 @@ def parse_args():
     # Dataset-specific optional paths
     p.add_argument("--dutch_path", type=str, default="data/raw/dutch.csv",
                    help="Dutch CSV 경로(기본 data/raw/dutch.csv)")
-    p.add_argument("--communities_names", type=str, default=None,
-                   help="communities.names 경로(기본 data_dir/raw/communities.names)")
-    p.add_argument("--communities_data", type=str, default=None,
-                   help="communities.data 경로(기본 data_dir/raw/communities.data)")
+    # p.add_argument("--communities_names", type=str, default=None,
+    #                help="communities.names 경로(기본 data_dir/raw/communities.names)")
+    # p.add_argument("--communities_data", type=str, default=None,
+    #                help="communities.data 경로(기본 data_dir/raw/communities.data)")
     p.add_argument("--tfds_data_dir", type=str, default=None,
                 help="TFDS data_dir (없으면 기본 캐시)")
     p.add_argument("--celebA_manual_dir", type=str, default=None,

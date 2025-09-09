@@ -37,9 +37,9 @@ def _parse_names_smart(names_path: Path, ncols: int):
     return []
 
 def _read_communities_with_names(data_dir: str):
-    raw_dir = Path(data_dir) / "raw"
-    data_path = raw_dir / "communities.data"
-    names_path = raw_dir / "communities.names"
+    # raw_dir = Path(data_dir) / "raw"
+    data_path = Path(data_dir) / "communities.data"
+    names_path = Path(data_dir) / "communities.names"
 
     df = pd.read_csv(
         data_path,

@@ -99,8 +99,8 @@ def load_dutch(args):
       --sens_thresh <float in 0..1> (default: 0.5)
       --dutch_path  <path> (default: data/raw/dutch.csv)
     """
-    path = getattr(args, "dutch_path", "data/raw/dutch.csv")
-    df = pd.read_csv(path)
+    path = getattr(args, "data_dir", "data/raw/dutch.csv")
+    df = pd.read_csv(path + "dutch.csv")
 
     seed = getattr(args, "seed", 42)
     x_mode = getattr(args, "x_sensitive", "drop")

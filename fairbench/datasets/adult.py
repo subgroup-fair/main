@@ -6,10 +6,10 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from ..utils.trainval import split_train_val
 from .shrink import shrink_smallest_by_global_frac
 
-def _fetch_adult():
+def _fetch_adult(folder):
     import pandas as pd, numpy as np
 
-    path = "data/raw/adult.csv"
+    path = folder + "adult.csv"
     df = pd.read_csv(path)
 
     # 0) 가벼운 정리
@@ -271,7 +271,7 @@ def _infer_raw_cols_from_S(selected_S_cols, X: pd.DataFrame) -> list:
 
 
 def load_adult(args):
-    X, y = _fetch_adult()
+    X, y = _fetch_adult(folder = args.data_dir)
     S = _extended_sensitive_from_adult_df(X)
 
     sens_keys = getattr(args, "sens_keys", None)

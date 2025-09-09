@@ -1,7 +1,7 @@
 # fairbench/datasets/celebA.py
 import torch
 from torch.utils.data import DataLoader, random_split
-import tensorflow_datasets as tfds
+# import tensorflow_datasets as tfds
 
 import torchvision.transforms as T
 

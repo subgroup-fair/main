@@ -5,7 +5,8 @@ from sklearn.model_selection import train_test_split
 from ..utils.trainval import split_train_val
 
 def load_toy_manyq(args):
-    n = 20000; d = 20; q = args.q
+    n = 2000; d = 60; q = args.q
+    assert d > q, f"d must be larger than q, but got d={d} <= q={q}"
     rng = np.random.default_rng(args.seed)
     X = rng.normal(size=(n, d)).astype(np.float32)
 

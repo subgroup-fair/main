@@ -54,24 +54,23 @@ ds_args() {
   local ds="$1"
   case "$ds" in
     adult)
-      echo "--dataset adult --sens_keys sex,race,age,marital-status --sens_thresh 0.5"
+      echo "--dataset adult --sens_keys sex,race,age,marital-status --sens_thresh 0.5 --data_dir ../data/raw/"
       ;;
     communities)
       echo "--dataset communities --sens_keys paper18 --sens_thresh 0.5 \
-            --communities_names data/raw/communities.names \
-            --communities_data  data/raw/communities.data"
+            --data_dir ../data/raw/"
       ;;
     dutch)
       echo "--dataset dutch --sens_keys sex,age --sens_thresh 0.5 \
-            --dutch_path data/raw/dutch.csv"
+            --data_dir ../data/raw/"
       ;;
-    toy_manyq)
-      echo "--dataset toy_manyq --q 256"
-      ;;
-    celebA)
-      # CelebA는 이미지 로더 내부에서 sens_keys=auto 처리한다고 가정
-      echo "--dataset celebA --sens_keys auto --sens_thresh 0.5"
-      ;;
+    # toy_manyq)  
+    #   echo "--dataset toy_manyq --n 2000 --d 10 --q 4"
+    #   ;;
+    # celebA)
+    #   # CelebA는 이미지 로더 내부에서 sens_keys=auto 처리한다고 가정
+    #   echo "--dataset celebA --sens_keys auto --sens_thresh 0.5"
+      # ;;
     *)
       echo "Unknown dataset: $ds" >&2; exit 1;;
   esac
@@ -109,17 +108,34 @@ CMDS=()
 enqueue() { CMDS+=("$*"); }
 
 # ===== 메소드별 스윕 구성 =====
-build_dr_cmds() {
+# build_dr_cmds() {
+#   local ds extra seed lam nlow
+#   for ds in adult communities dutch; do
+#     extra=$(ds_args "$ds")
+#     for lam in "${DR_LAMS[@]}"; do
+#       for nlow in "${DR_NLOWS[@]}"; do
+#         for seed in "${SEED_ARR[@]}"; do
+#           enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method dr \
+#             --lambda_fair $lam --n_low $nlow \
+#             --x_sensitive $X_SENSITIVE --seed $seed \
+#             --save_dir \"$SAVE_DIR/dr_$ds\""
+#         done
+#       done
+#     done
+#   done
+# }
+
+build_dr_subgroup_subset_3q_cmds() {
   local ds extra seed lam nlow
   for ds in adult communities dutch; do
     extra=$(ds_args "$ds")
     for lam in "${DR_LAMS[@]}"; do
       for nlow in "${DR_NLOWS[@]}"; do
         for seed in "${SEED_ARR[@]}"; do
-          enqueue "$(gpu_prefix) $PY run_experiments.py $extra --method dr \
+          enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method dr_subgroup_subset_3q \
             --lambda_fair $lam --n_low $nlow \
             --x_sensitive $X_SENSITIVE --seed $seed \
-            --save_dir \"$SAVE_DIR/dr_$ds\""
+            --save_dir \"../0909_$SAVE_DIR/dr_$ds\""
         done
       done
     done
@@ -132,10 +148,10 @@ build_reduction_cmds() {
     extra=$(ds_args "$ds")
     for r in "${RED_GAMMAS[@]}"; do
       for seed in "${SEED_ARR[@]}"; do
-        enqueue "$(gpu_prefix) $PY run_experiments.py $extra --method reduction \
+        enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method reduction \
           --red_constraint $RED_CONSTRAINT --red_max_iter $RED_MAX_ITER --red_eps $r \
           --x_sensitive $X_SENSITIVE --seed $seed \
-          --save_dir \"$SAVE_DIR/reduction_$ds\""
+          --save_dir \"../0909_$SAVE_DIR/reduction_$ds\""
       done
     done
   done
@@ -147,10 +163,10 @@ build_gerryfair_cmds() {
     extra=$(ds_args "$ds")
     for g in "${GF_GAMMAS[@]}"; do
       for seed in "${SEED_ARR[@]}"; do
-        enqueue "$(gpu_prefix) $PY run_experiments.py $extra --method gerryfair \
+        enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method gerryfair \
           --gamma $g --gf_max_iters $GF_MAX_ITERS --gf_fairness $GF_FAIRNESS \
           --x_sensitive $X_SENSITIVE --seed $seed \
-          --save_dir \"$SAVE_DIR/gerryfair_$ds\""
+          --save_dir \"../0909_$SAVE_DIR/gerryfair_$ds\""
       done
     done
   done
@@ -163,10 +179,10 @@ build_multicalib_cmds() {
     for a in "${MC_ALPHAS[@]}"; do
       for l in "${MC_LAMBDAS[@]}"; do
         for seed in "${SEED_ARR[@]}"; do
-          enqueue "$(gpu_prefix) $PY run_experiments.py $extra --method multicalib \
+          enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method multicalib \
             --mc_alpha $a --mc_lambda $l --mc_max_iter $MC_MAX_ITER \
             --x_sensitive $X_SENSITIVE --seed $seed \
-            --save_dir \"$SAVE_DIR/mc_$ds\""
+            --save_dir \"../0909_$SAVE_DIR/mc_$ds\""
         done
       done
     done
@@ -183,7 +199,7 @@ build_sequential_cmds() {
     #   [[ -n "$SEQ_WARMUP" ]] && sched_flags+=" --seq_warmup $SEQ_WARMUP"
     for a in "${SEQ_ALPHAS[@]}"; do
         for seed in "${SEED_ARR[@]}"; do
-        enqueue "$(gpu_prefix) $PY run_experiments.py $extra --method sequential \
+        enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method sequential \
             --seq_alpha $a $sched_flags \
             --x_sensitive $X_SENSITIVE --seed $seed \
             --tfds_data_dir data/tfds \
@@ -201,7 +217,7 @@ if [[ -z "$METHOD" ]]; then
 fi
 
 case "$METHOD" in
-  dr)          build_dr_cmds ;;
+  dr)          build_dr_subgroup_subset_3q_cmds ;;
   gerryfair)   build_gerryfair_cmds ;;
   multicalib)  build_multicalib_cmds ;;
   reduction)  build_reduction_cmds ;;
