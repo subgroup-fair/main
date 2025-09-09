@@ -12,12 +12,11 @@
 
 #### 코드 변경에 관하여
 - [ ] 현재 코드에 하드코딩된 부분 조절 가능하도록 변경, 조절하면서 실험
-      - gamma(n_low/n 비율)
+      - xxx gamma(n_low/n 비율) xxx
       - q(sensitive attribute 개수) q가 커질수록 가장 작은 subgroup의 size도 감소하도록 빌드
       - real data에서 subgroup 하나의 샘플 개수 극단적으로 줄여보기(1,3,5,7, ...)
-- [ ] subgroup => subgroup subset
-- [ ] ```sup_mmd_gaussian(scores, groups, V, sigma), sup_wasserstein_1d(scores, groups, V)```
-- [ ] synthetic data로 실험
+- [x] subgroup => subgroup subset
+- [x] synthetic data로 실험
 - [x] d(P_s,P_.) => d(P_s,P_s^c)
       - metrics/supipm.py 에서 ```max_s over {0,1}^q```
 - [x] 현재 코드에 대한 이해, 디버깅, 신뢰성검증
