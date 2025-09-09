@@ -212,10 +212,10 @@ shrink_seed: shrink 샘플링에 쓸 시드.
  2. sup_w1_dfcols: 두 분포의 WD.                                                                     - singleton subgroup
  3. sup_mmd_over_V: 전체 vs 각 subgroup 분포 MMD의 최댓값.                                           - 𝒱 (subgroup subset)
  4. sup_w1_over_V: 전체 vs 각 subgroup 분포 WD의 최댓값.                                             - 𝒱 (subgroup subset)
- 5.6  worst/mean worst_group_spd, mean_group_spd: SPD.                                                - singleton subgroup
- 7.8 worst/mean worst_weighted_group_spd, mean_weighted_group_spd : 그룹 빈도로 가중 평균된 SPD.          - singleton subgroup
- 9.10 worst/mean worst_spd_over_V,mean_spd_over_V : SPD.                                                - 𝒱 (subgroup subset)
- 11.12 worst/mean worst_weighted_spd_over_V, mean_weighted_spd_over_V: 그룹 빈도로 가중 평균된 SPD.        - 𝒱 (subgroup subset)
+ 5. 5-6  worst/mean worst_group_spd, mean_group_spd: SPD.                                                - singleton subgroup
+ 7. 7-8 worst/mean worst_weighted_group_spd, mean_weighted_group_spd : 그룹 빈도로 가중 평균된 SPD.          - singleton subgroup
+ 9. 9-10 worst/mean worst_spd_over_V,mean_spd_over_V : SPD.                                                - 𝒱 (subgroup subset)
+ 11. 11-12 worst/mean worst_weighted_spd_over_V, mean_weighted_spd_over_V: 그룹 빈도로 가중 평균된 SPD.        - 𝒱 (subgroup subset)
   
 
 ---
