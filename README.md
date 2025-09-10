@@ -15,6 +15,10 @@
       - xxx gamma(n_low/n 비율) xxx
       - q(sensitive attribute 개수) q가 커질수록 가장 작은 subgroup의 size도 감소하도록 빌드
       - real data에서 subgroup 하나의 샘플 개수 극단적으로 줄여보기(1,3,5,7, ...)
+
+- [ ] synthetic, real data subgroup sample 수 줄여서 확인
+- [ ] supIPM을 measure로 쓸 것인가? -> 2^2^q개라서 계산 힘듦. 그러니까 subgroup subset을 랜덤하게 뽑아서 계산하고, 그 계산을 여러번 해서 box plot으로 보여주기 (q가 큰 경우), q가 작은 경우는 (예: Dutch?) 2^2^2 = 16이므로 랜덤없이 정확한 값 계산 가능할듯
+- [ ] text data (toxic classification?) 분석하기 -> 세현이형 도움 받기 (여기서 multiple sensitive attribute을 정의 잘 해야 subgroup fairness가 될 듯)
 - [x] subgroup => subgroup subset
 - [x] synthetic data로 실험
 - [x] d(P_s,P_.) => d(P_s,P_s^c)
