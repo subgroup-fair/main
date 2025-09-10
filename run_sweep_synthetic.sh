@@ -130,16 +130,16 @@ enqueue() { CMDS+=("$*"); }
 
 build_dr_subgroup_subset_3q_cmds() {
   local ds extra seed lam nlow
-  for ds in toy_manyq; do
-    extra=$(ds_args "$ds")
-    for lam in "${DR_LAMS[@]}"; do
-      for nlow in "${DR_NLOWS[@]}"; do
-        for seed in "${SEED_ARR[@]}"; do
-          for q in "${QS[@]}"; do
+  for q in "${QS[@]}"; do
+    for ds in toy_manyq; do
+      extra=$(ds_args "$ds")
+      for lam in "${DR_LAMS[@]}"; do
+        for nlow in "${DR_NLOWS[@]}"; do
+          for seed in "${SEED_ARR[@]}"; do
             enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method dr_subgroup_subset_3q \
               --lambda_fair $lam --n_low $nlow --q $q \
               --x_sensitive $X_SENSITIVE --seed $seed \
-              --save_dir \"../0909_$SAVE_DIR/dr_$ds\""
+              --save_dir \"../0910_$SAVE_DIR/dr_$ds\""
           done
         done
       done
@@ -149,15 +149,15 @@ build_dr_subgroup_subset_3q_cmds() {
 
 build_reduction_cmds() {
   local ds extra seed r
-  for ds in toy_manyq; do
-    extra=$(ds_args "$ds")
-    for r in "${RED_GAMMAS[@]}"; do
-      for seed in "${SEED_ARR[@]}"; do
-        for q in "${QS[@]}"; do
+  for q in "${QS[@]}"; do
+    for ds in toy_manyq; do
+      extra=$(ds_args "$ds")
+      for r in "${RED_GAMMAS[@]}"; do
+        for seed in "${SEED_ARR[@]}"; do
           enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method reduction \
             --red_constraint $RED_CONSTRAINT --red_max_iter $RED_MAX_ITER --red_eps $r \
             --x_sensitive $X_SENSITIVE --seed $seed --q $q \
-            --save_dir \"../0909_$SAVE_DIR/reduction_$ds\""
+            --save_dir \"../0910_$SAVE_DIR/reduction_$ds\""
         done
       done
     done
@@ -166,15 +166,16 @@ build_reduction_cmds() {
 
 build_gerryfair_cmds() {
   local ds extra seed g
-  for ds in toy_manyq; do
-    extra=$(ds_args "$ds")
-    for g in "${GF_GAMMAS[@]}"; do
-      for seed in "${SEED_ARR[@]}"; do
-        for q in "${QS[@]}"; do
+  for q in "${QS[@]}"; do
+    for ds in toy_manyq; do
+      extra=$(ds_args "$ds")
+      for g in "${GF_GAMMAS[@]}"; do
+        for seed in "${SEED_ARR[@]}"; do
+          
           enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method gerryfair \
             --gamma $g --gf_max_iters $GF_MAX_ITERS --gf_fairness $GF_FAIRNESS \
             --x_sensitive $X_SENSITIVE --seed $seed --q $q \
-            --save_dir \"../0909_$SAVE_DIR/gerryfair_$ds\""
+            --save_dir \"../0910_$SAVE_DIR/gerryfair_$ds\""
         done
       done
     done
@@ -183,16 +184,17 @@ build_gerryfair_cmds() {
 
 build_multicalib_cmds() {
   local ds extra seed a l
-  for ds in toy_manyq; do
-    extra=$(ds_args "$ds")
-    for a in "${MC_ALPHAS[@]}"; do
-      for l in "${MC_LAMBDAS[@]}"; do
-        for seed in "${SEED_ARR[@]}"; do
-          for q in "${QS[@]}"; do
+  for q in "${QS[@]}"; do
+    for ds in toy_manyq; do
+      extra=$(ds_args "$ds")
+      for a in "${MC_ALPHAS[@]}"; do
+        for l in "${MC_LAMBDAS[@]}"; do
+          for seed in "${SEED_ARR[@]}"; do
+          
             enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method multicalib \
               --mc_alpha $a --mc_lambda $l --mc_max_iter $MC_MAX_ITER \
               --x_sensitive $X_SENSITIVE --seed $seed --q $q \
-              --save_dir \"../0909_$SAVE_DIR/mc_$ds\""
+              --save_dir \"../0910_$SAVE_DIR/mc_$ds\""
           done
         done
       done
@@ -202,15 +204,16 @@ build_multicalib_cmds() {
 
 build_sequential_cmds() {
   local extra seed a sched_flags=""
-  for ds in toy_manyq; do
-    extra=$(ds_args "$ds")
-    #   extra=$(ds_args "celebA")   # ★ CelebA만
-    #   # 선택적 스케줄 플래그
-    #   [[ -n "$SEQ_SCHED"  ]] && sched_flags+=" --seq_sched $SEQ_SCHED"
-    #   [[ -n "$SEQ_WARMUP" ]] && sched_flags+=" --seq_warmup $SEQ_WARMUP"
-    for a in "${SEQ_ALPHAS[@]}"; do
-      for seed in "${SEED_ARR[@]}"; do
-        for q in "${QS[@]}"; do
+  for q in "${QS[@]}"; do
+    for ds in toy_manyq; do
+      extra=$(ds_args "$ds")
+      #   extra=$(ds_args "celebA")   # ★ CelebA만
+      #   # 선택적 스케줄 플래그
+      #   [[ -n "$SEQ_SCHED"  ]] && sched_flags+=" --seq_sched $SEQ_SCHED"
+      #   [[ -n "$SEQ_WARMUP" ]] && sched_flags+=" --seq_warmup $SEQ_WARMUP"
+      for a in "${SEQ_ALPHAS[@]}"; do
+        for seed in "${SEED_ARR[@]}"; do
+        
           enqueue "$(gpu_prefix) $PY run_experiments2.py $extra --method sequential \
               --seq_alpha $a $sched_flags \
               --x_sensitive $X_SENSITIVE --seed $seed --q $q \
