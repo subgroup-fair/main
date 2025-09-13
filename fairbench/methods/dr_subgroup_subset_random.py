@@ -1,0 +1,485 @@
+# fairbench/methods/dr.py
+import numpy as np, torch, torch.nn as nn, torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+from ..utils.threshold import tune_threshold
+import logging, time
+from tqdm.auto import tqdm
+from fairbench.utils.logging_utils import Timer, mem_str
+# ===== NEW: Apriori-based unions over disjoint base subgroups =====
+from itertools import combinations
+from ..utils.mlp import MLP
+
+import numpy as np, random, torch
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
+
+# ===== NEW: Random packing unions over disjoint base subgroups =====
+def _random_pack_unions(counts, T, M=64, seed=None, max_len=None, max_cols=None):
+    """
+    (1) 관측된 디스조인트 셀들을 무작위로 나열하고
+    (2) 앞에서부터 합쳐가며 누적 카운트가 T에 도달하면 그 묶음을 하나의 subgroup-subset으로 저장
+    (3) 리스트 끝까지 진행, 이 과정을 M회 반복
+    (4) 중복 제거 후 반환
+    - complement(= N - union_size)도 T 이상인 것만 유지
+    """
+    import numpy as np
+    N = int(np.sum(counts))
+    K = len(counts)
+    if K == 0 or T <= 0:
+        print(f"[pack] skip: K={K}, T={T}")
+        return []
+
+    rng = np.random.default_rng(seed)
+    seen = set()
+    out = []
+    print(f"[pack] N={N}, K={K}, T={T}, M={M}, max_len={max_len}, max_cols={max_cols}, seed={seed}")
+
+    for rep in range(int(M)):
+        perm = rng.permutation(K)
+        print(f"[pack][rep={rep+1}/{int(M)}])")
+        i = 0
+        block_idx = 0
+        while i < K:
+            start_i = i
+            cum = 0
+            members = []
+            # (2) 누적이 T 도달할 때까지 앞에서부터 채움
+            while i < K and cum < T:
+                j = int(perm[i])
+                c = int(counts[j])
+                if c > 0:            # 0 카운트(비관측) 셀은 건너뜀
+                    members.append(j)
+                    cum += c
+                i += 1
+                if (max_len is not None) and (len(members) >= int(max_len)) and (cum < T):
+                    # 길이 제한이 있으면 여기서 더 못 채움
+                    # print(f"[pack][rep={rep+1}]  max_len hit (len={len(members)}) before reaching T; stop block")
+                    break
+
+            # (3) 누적이 T에 도달한 경우만 후보
+            if cum >= T:
+                block_idx += 1
+                comp = N - cum
+                valid = (comp >= T)
+                print(f"[pack][rep={rep+1}] block#{block_idx}: "
+                          f"members={members} | counts={[int(counts[m]) for m in members]} "
+                          f"| size={cum} | comp={comp} | valid={'Y' if valid else 'N'}")
+                if (N - cum) >= T:   # complement ≥ T
+                    key = tuple(sorted(members))   # 순서 불변 canonical key
+                    ############## 중복제거하는곳!!!!!!!!!##############
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(key)
+                        # print(f"[pack][rep={rep+1}]  -> kept (new)")
+                        if (max_cols is not None) and (len(out) >= int(max_cols)):
+                            print(f"[pack] reached max_cols={max_cols}; stop early")
+                            return out
+            else:
+                # 남은 걸로는 더 이상 T 도달 불가 → 종료
+                # print(f"[pack][rep={rep+1}] stop: remaining insufficient (cum={cum} < T) "
+                        #   f"from i={start_i}..{i-1}")
+                # 이 rep을 종료하지 말고, 현재 i 지점부터 "다음 블록"을 계속 시도
+                continue
+
+    print(f"[pack] done: unique_unions={len(out)}")
+    return out
+
+
+
+def _bitpack_cells_from_df(S_df, device="cpu"):
+    """
+    S_df: (N x q) 이진 DataFrame
+    return: 
+      - masks: list[torch.BoolTensor] # 각 '관측된' 셀의 마스크 (디스조인트)
+      - counts: list[int]             # 각 셀의 크기
+      - order: list[int]              # 셀 인덱스(비트패턴)를 오름차순으로
+    """
+    import numpy as np, torch
+    cols = list(S_df.columns)
+    if len(cols) == 0 or len(S_df) == 0:
+        return [], [], []
+    # bitpack: code = sum(S[:,j] << j)
+    B = np.stack([S_df[c].astype(np.int8).values for c in cols], axis=1) # (N,q)
+    codes = np.zeros(len(S_df), dtype=np.int64)
+    for j in range(B.shape[1]):
+        codes |= (B[:, j].astype(np.int64) << j)
+    uniq, inv = np.unique(codes, return_inverse=True) # 관측된 셀만
+    N = len(S_df)
+    masks, counts, order = [], [], []
+    for k, u in enumerate(uniq.tolist()):
+        m = torch.from_numpy((inv == k)).to(device)
+        cnt = int(m.sum().item())
+        masks.append(m)
+        counts.append(cnt)
+        order.append(int(u))
+    return masks, counts, order
+
+# ===== NEW: pretty-print helpers for unions (tabular) =====
+def _fmt_bits_from_code(code: int, cols):
+    q = len(cols)
+    bits = [(code >> j) & 1 for j in range(q)]
+    return "{" + ", ".join(f"{cols[j]}={bits[j]}" for j in range(q)) + "}"
+
+def _log_unions_tabular(unions, counts, order_codes, cols, N, max_show=10, tag="pack"):
+    """
+    unions: List[Tuple[int,...]]  # _random_pack_unions가 돌려준 셀 인덱스 튜플
+    counts: List[int]              # 셀별 카운트
+    order_codes: List[int]         # 셀의 비트코드(컬럼 순서 기반)
+    cols: List[str]                # 민감속성 컬럼명 순서
+    """
+    K = len(unions)
+    print(f"[{tag}] unions_proposed={K} (show up to {max_show})")
+    show = min(max_show, K)
+    for r in range(show):
+        idx_tuple = unions[r]
+        # cell_codes = [order_codes[i] for i in idx_tuple]
+        cell_counts = [int(counts[i]) for i in idx_tuple]
+        pos = sum(cell_counts); neg = N - pos
+        # cells_human = "[" + ", ".join(_fmt_bits_from_code(c, cols) for c in cell_codes) + "]"
+        # print(f"[{tag}][#{r+1}] cells={idx_tuple} | size={pos} (comp={neg}) | members={cells_human} | counts={cell_counts}")
+        print(f"[{tag}][#{r+1}] cells={idx_tuple} | size={pos} (comp={neg}) | counts={cell_counts}")
+
+    if K > show:
+        print(f"[{tag}] ... {K-show} more")
+
+# (서명 변경) agg_repeat 추가  ▼▼▼
+def build_C_from_unions_df(S_df, device="cpu",
+                            n_low=None, n_low_frac=None,
+                            agg_max_len=300, agg_max_cols=2048,
+                            agg_repeat=64):  # NEW
+    """
+    디스조인트 셀(관측된 것들) 위에서 Apriori로 '최소 합집합'을 만들고, 
+    각 합집합(Union)의 마스크 컬럼을 C에 쌓아 반환.
+    - 지지도 임계: T = ceil(gamma * N) (gamma = n_low_frac 또는 n_low/N)
+    - 추가로 complement 크기도 T 이상인 것만 유지(편향/퇴화 방지)
+    """
+    import torch, numpy as np
+    
+    N = len(S_df)
+    
+    if N == 0 or S_df.shape[1] == 0:
+        return torch.zeros((N, 0), device=device)
+    if (n_low_frac is not None) and (n_low_frac > 0):
+        T = int(np.ceil(float(n_low_frac) * N))
+    else:
+        T = int(n_low or 0)
+    base_masks, counts, order = _bitpack_cells_from_df(S_df, device=device)
+    alive = sum(c >= T for c in counts)
+    print(f"[tabular] 원자 셀 단계에서 살아남은 개수 = {alive}")
+    if len(base_masks) == 0:
+        return torch.zeros((N, 0), device=device)
+
+    # (호출 교체) Apriori → Random packing  ▼▼▼
+    # unions = _apriori_min_cover(counts, T, max_len=agg_max_len)
+    unions = _random_pack_unions(
+        counts, T, M=int(agg_repeat), max_len=agg_max_len, max_cols=agg_max_cols
+    )
+    cols_list = list(S_df.columns)
+    _log_unions_tabular(unions, counts, order, cols_list, N, max_show=10, tag="pack->C")  # NEW
+
+    if len(unions) == 0:
+        return torch.zeros((N, 0), device=device)
+    cols = []
+    for idx_tuple in unions:
+        umask = None
+        for i_local in idx_tuple:
+            m = base_masks[i_local]
+            umask = m if umask is None else (umask | m)
+        pos = int(umask.sum().item())
+        neg = N - pos
+        if pos >= T and neg >= T:
+            cols.append(umask.float().view(-1, 1))
+        if len(cols) >= int(agg_max_cols):
+            break
+    if len(cols) == 0:
+        return torch.zeros((N, 0), device=device)
+    
+    print(f"[tabular] N={N}, q={S_df.shape[1]}, T={T}, agg_repeat={agg_repeat}, max_len={agg_max_len}, max_cols={agg_max_cols}")
+    print(f"[tabular] 관측 셀 K={len(counts)}, alive(>=T)={alive}, dead(<T)={len(counts)-alive}")
+    return torch.cat(cols, dim=1)
+
+log = logging.getLogger("fair")
+
+
+
+# ----- DR 서브루틴 -----
+class Discriminator(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(1,32), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(32,16), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(16,1)
+        )
+    def forward(self, z):
+        return self.net(z)
+
+def artanh_corr(yv, gz, eps=1e-6):
+    y_c = yv - yv.mean()
+    g_c = gz - gz.mean()
+    y_std = torch.sqrt((y_c**2).mean() + eps); g_std = torch.sqrt((g_c**2).mean() + eps)
+    corr = (y_c*g_c).mean()/(y_std*g_std + eps)
+    corr_abs = torch.clamp(torch.abs(corr), 0.0, 1.0-1e-6)
+    return torch.atanh(corr_abs)
+
+def build_C_tensor(S_df, args, device="cuda", n_low=None, n_low_frac=None,
+                   apriori_union=True, agg_max_len=4, agg_max_cols=2048):
+    N = len(S_df)
+    if N == 0 or S_df.shape[1] == 0:
+        return torch.zeros((N, 0), device=device)
+    if apriori_union:
+        return build_C_from_unions_df(
+            S_df, device=device, n_low=n_low, n_low_frac=n_low_frac,
+            agg_max_len=agg_max_len, agg_max_cols=agg_max_cols,
+            agg_repeat=int(getattr(args, "agg_repeat", 64))  # NEW
+        )
+    if (n_low_frac is not None) and (n_low_frac > 0):
+        min_support = int(np.ceil(float(n_low_frac) * N))
+    else:
+        min_support = int(n_low or 0)
+    cols = list(S_df.columns)
+    mats = []
+    for c in cols:
+        v = torch.tensor(S_df[c].values.astype(np.int32),
+                         dtype=torch.float32, device=device)
+        pos = int(v.sum().item()); neg = int(N - pos)
+        if pos >= min_support and neg >= min_support:
+            mats.append(v.view(-1, 1))
+    if len(mats) == 0:
+        return torch.zeros((N, 0), device=device)
+    return torch.cat(mats, dim=1)
+
+# def _train_tabular(args, data, device):
+#     X_tr = torch.tensor(data["X_train"].values, dtype=torch.float32, device=device)
+#     y_tr = torch.tensor(data["y_train"], dtype=torch.float32, device=device)
+#     X_va = torch.tensor(data["X_val"].values, dtype=torch.float32, device=device)
+#     y_va = torch.tensor(data["y_val"], dtype=torch.float32, device=device)
+#     S_tr = data["S_train"]; S_va = data["S_val"]
+#     n, d = X_tr.shape
+#     # f = MLP(d).to(device)
+#     print("d_x: ", d)
+
+#     f = MLP(d).to(device)
+
+#     g = Discriminator().to(device)
+#     n_low = getattr(args, "n_low", None)
+#     n_low_frac = getattr(args, "n_low_frac", None)
+#     use_ap = bool(getattr(args, "agg_apriori", True) or getattr(args, "apriori_union", False))
+#     agg_max_len = int(getattr(args, "agg_max_len", 4))
+#     agg_max_cols = int(getattr(args, "agg_max_cols", 2048))
+#     with torch.no_grad():
+#         Ctr = build_C_tensor(
+#             S_tr, args, device=device, n_low=n_low, n_low_frac=n_low_frac,
+#             apriori_union=use_ap, agg_max_len=agg_max_len, agg_max_cols=agg_max_cols
+#         )
+#     v = nn.Parameter(torch.randn(Ctr.shape[1], device=device))
+#     if Ctr.shape[1] > 0:
+#         v.data = v / (v.norm() + 1e-12)
+#     opt_f = optim.Adam(f.parameters(), lr=args.lr, weight_decay=1e-7)
+#     opt_g = optim.Adam(g.parameters(), lr=args.lr*3)
+#     opt_v = optim.Adam([v], lr=args.lr*10)
+#     loss_bce = nn.BCEWithLogitsLoss()
+#     best_val = float("inf"); best_acc = -1.0; best_f = None
+#     thr = float(getattr(args, "thr", 0.5))
+#     for ep in tqdm(range(args.epochs)):
+#         f.train(); g.train()
+#         logit = f(X_tr)
+#         cls = loss_bce(logit, y_tr)
+#         if args.lambda_fair == 0.0 or Ctr.shape[1] == 0:
+#             total = cls
+#             opt_f.zero_grad(); total.backward(); opt_f.step()
+#         else:
+#             with torch.no_grad():
+#                 v_unit = v / (v.norm() + 1e-12)
+#                 yv = (Ctr @ v_unit).detach()
+#             gz = g(logit.unsqueeze(1)).squeeze(-1)
+#             dr = artanh_corr(yv, gz)
+#             total = cls + args.lambda_fair * dr
+#             opt_f.zero_grad(); total.backward(retain_graph=True); opt_f.step()
+#             for _ in range(3):
+#                 logit_det = f(X_tr).detach()
+#                 v_unit = v / (v.norm() + 1e-12)
+#                 yv = (Ctr @ v_unit)
+#                 gz = g(logit_det.unsqueeze(1)).squeeze(-1)
+#                 dr = artanh_corr(yv, gz)
+#                 opt_g.zero_grad(); (-dr).backward(retain_graph=True); opt_g.step()
+#                 opt_v.zero_grad(); (-dr).backward(); opt_v.step()
+#             with torch.no_grad():
+#                 v.data = v.data / (v.data.norm() + 1e-12)
+#         f.eval()
+#         with torch.no_grad():
+#             logit_va = f(X_va)
+#             prob_va = torch.sigmoid(logit_va)
+#             pred_va = (prob_va >= thr).float()
+#             val_acc = (pred_va == y_va).float().mean().item()
+#             val_loss = loss_bce(logit_va, y_va).item()
+#             if (val_acc > best_acc) or (np.isclose(val_acc, best_acc) and val_loss < best_val):
+#                 best_acc = val_acc; best_val = val_loss
+#                 best_f = {k: v_.detach().cpu().clone() for k, v_ in f.state_dict().items()}
+#     if best_f is not None:
+#         f.load_state_dict({k: v_.to(device) for k, v_ in best_f.items()})
+
+
+    
+#     # [ADD-TS] Temperature scaling on validation
+#     with torch.no_grad():
+#         logit_va = f(X_va)                       # [N_val]
+#     bce = nn.BCEWithLogitsLoss()
+
+#     # logT로 최적화해 T>0 보장 (T = exp(logT))
+#     logT = torch.zeros((), device=device, requires_grad=True)
+#     optT = torch.optim.Adam([logT], lr=0.05)
+
+#     for _ in range(200):  # 가볍게 200스텝
+#         T = torch.exp(logT) + 1e-6
+#         loss_T = bce(logit_va / T, y_va)        # NLL 최소화
+#         optT.zero_grad()
+#         loss_T.backward()
+#         optT.step()
+
+#     T = float(torch.exp(logT).item())
+
+#     # (선택) 너무 극단적 T 방지: 클리핑
+#     T = float(np.clip(T, 0.25, 4.0))
+
+#     # calibration 적용한 확률로 임계값 튜닝
+#     with torch.no_grad():
+#         prob_va_cal = torch.sigmoid(logit_va / T).cpu().numpy()
+
+#     thr_metric = getattr(args, "thr_metric", "accuracy")  # 'accuracy'|'f1'|'youden' 등
+#     thr = float(tune_threshold(prob_va_cal, y_va.cpu().numpy()))
+#     log.info(f"[TS] fitted T={T:.4f}; [THR] tuned metric={thr_metric}, thr={thr:.4f}")
+
+#     # === Test with calibrated probs ===
+#     f.eval()
+#     with torch.no_grad():
+#         logit_te = f(torch.tensor(
+#             data["X_test"].values, dtype=torch.float32, device=device
+#         ))
+#         p_test = torch.sigmoid(logit_te / T).cpu().numpy()
+
+#     yhat = (p_test >= thr).astype(int)
+
+#     f.eval()
+#     with torch.no_grad():
+#         p_test = torch.sigmoid(f(torch.tensor(
+#             data["X_test"].values, dtype=torch.float32, device=device
+#         ))).cpu().numpy()
+#         yhat = (p_test >= thr).astype(int)
+#     return dict(proba=p_test, pred=yhat)
+
+def _train_image(args, data, device):
+    f = SmallConvNet().to(device)
+    g = Discriminator().to(device)
+    opt_f = optim.Adam(f.parameters(), lr=args.lr, weight_decay=1e-4)
+    opt_g = optim.Adam(g.parameters(), lr=args.lr*3)
+    loss_bce = nn.BCEWithLogitsLoss()
+    thr = float(getattr(args, "thr", 0.5))
+    best_val = float("inf"); best_f = None
+    def batch_C(S_list, n_low_frac=None, n_low=None, 
+            apriori_union=False, agg_max_len=4, agg_max_cols=512,
+            agg_repeat=64):  # NEW
+        import numpy as np, torch
+        keys = list(data["meta"]["sens_list"])
+        N = len(S_list)
+        if N == 0: return torch.zeros((0,0), device=device)
+        if (n_low_frac is not None) and (n_low_frac > 0):
+            T = int(np.ceil(float(n_low_frac) * N))
+        else:
+            T = int(n_low or 0)
+        codes = np.zeros(N, dtype=np.int64)
+        for j, k in enumerate(keys):
+            bit = np.array([int(bool(s[k])) for s in S_list], dtype=np.int64)
+            codes |= (bit << j)
+        uniq, inv = np.unique(codes, return_inverse=True)
+        masks = []; counts = []
+        for uidx in range(len(uniq)):
+            m = torch.from_numpy((inv == uidx)).to(device)
+            masks.append(m); counts.append(int(m.sum().item()))
+        alive = sum(c >= T for c in counts)
+        print("원자 셀 단계에서 살아남은 개수 =", alive)
+        # Apriori unions
+        if apriori_union:
+            print("DR) Apriori 기반 합집합 생성 중...")
+            # unions = _apriori_min_cover(counts, T, max_len=agg_max_len)
+            unions = _random_pack_unions(
+                counts, T, M=int(agg_repeat), max_len=agg_max_len, max_cols=agg_max_cols
+            )
+            cols = []
+            for idx_tuple in unions:
+                um = None
+                for i_local in idx_tuple:
+                    m = masks[i_local]
+                    um = m if um is None else (um | m)
+                pos = int(um.sum().item()); neg = N - pos
+                if pos >= T and neg >= T:
+                    cols.append(um.float().view(-1,1))
+                if len(cols) >= int(agg_max_cols): break
+            return torch.cat(cols, dim=1) if len(cols)>0 else torch.zeros((N,0), device=device)
+        Ms = []
+        for m in masks:
+            cnt = int(m.sum().item()); neg = N - cnt
+            if cnt >= T and neg >= T:
+                Ms.append(m.float().view(-1,1))
+        return torch.cat(Ms, dim=1) if len(Ms)>0 else torch.zeros((N,0), device=device)
+    for ep in range(args.epochs):
+        f.train(); g.train()
+        for x,y,S in data["train_loader"]:
+            x=x.to(device); y=y.float().to(device)
+            logit = f(x); cls = loss_bce(logit, y)
+            if args.lambda_fair == 0.0:
+                opt_f.zero_grad(); cls.backward(); opt_f.step(); continue
+            Cb = batch_C(
+                S,
+                n_low_frac=getattr(args, "n_low_frac", None),
+                n_low=getattr(args, "n_low", None),
+                apriori_union=bool(getattr(args, "agg_apriori", True) or getattr(args, "apriori_union", False)),
+                agg_max_len=int(getattr(args, "agg_max_len", 4)),
+                agg_max_cols=int(getattr(args, "agg_max_cols", 512)),
+                agg_repeat=int(getattr(args, "agg_repeat", 64)),  # NEW
+            )
+            if Cb.shape[1] == 0:
+                opt_f.zero_grad(); cls.backward(); opt_f.step(); continue
+            with torch.no_grad():
+                v_ = torch.randn(Cb.shape[1], device=device)
+                v_ = v_ / (v_.norm() + 1e-12)
+                yv = (Cb @ v_)
+            gz = g(logit.unsqueeze(1)).squeeze(-1)
+            dr = artanh_corr(yv, gz)
+            total = cls + args.lambda_fair * dr
+            opt_f.zero_grad(); total.backward(retain_graph=True); opt_f.step()
+            opt_g.zero_grad(); (-dr).backward(); opt_g.step()
+        f.eval(); val_losses = []
+        with torch.no_grad():
+            for x,y,S in data["val_loader"]:
+                x=x.to(device); y=y.float().to(device)
+                logit = f(x)
+                val_losses.append(loss_bce(logit, y).item())
+        val_loss = float(np.mean(val_losses)) if len(val_losses)>0 else float("inf")
+        if val_loss < best_val:
+            best_val = val_loss
+            best_f = {k: v_.detach().cpu().clone() for k, v_ in f.state_dict().items()}
+    if best_f is not None:
+        f.load_state_dict({k: v_.to(device) for k, v_ in best_f.items()})
+
+    f.eval(); pt=[]
+    with torch.no_grad():
+        for x,y,S in data["test_loader"]:
+            p = torch.sigmoid(f(x.to(device))).cpu().numpy()
+            pt.append(p)
+    pt = np.concatenate(pt)
+    yhat = (pt >= thr).astype(int)
+    return dict(proba=pt, pred=yhat)
+
+def run_dr_subgroup_subset_random(args, data):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if data["type"] == "tabular":
+        return _train_tabular(args, data, device)
+    elif data["type"] == "image":
+        return _train_image(args, data, device)
+    else:
+        raise ValueError(data["type"])

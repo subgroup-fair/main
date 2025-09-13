@@ -6,6 +6,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from ..utils.trainval import split_train_val
 from .shrink import shrink_smallest_by_global_frac
+import numpy as np, random, torch
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
 
 def _normalize_colname(name: str) -> str:
     # 소문자 + 앞뒤 공백 제거 + 탭 스페이스 정리 + 영문/숫자/밑줄만 남김
@@ -186,7 +192,7 @@ def load_communities(args):
       --sens_thresh (기본 0.5)
     """
     seed = getattr(args, "seed", 42)
-    x_mode = getattr(args, "x_sensitive", "drop")
+    x_mode = getattr(args, "x_sensitive", "concat")
     sens_keys = getattr(args, "sens_keys", "paper18")      # 기본값을 paper18로!
     sens_thresh = float(getattr(args, "sens_thresh", 0.5))
 

@@ -21,8 +21,9 @@ def parse_args():
     p.add_argument("--q", type=int, default=100, help="toy_manyq sensitive count")
 
     # X–S handling (공통)
-    p.add_argument("--x_sensitive", type=str, default="drop",
-                   choices=["drop", "keep", "concat"],
+    p.add_argument("--x_sensitive", type=str, default="concat",
+                #    choices=["drop", "keep", "concat"],
+                    choices=["concat"],
                    help="drop: 민감 원본컬럼을 X에서 제거, keep: 유지, concat: S를 X에 붙여 f(x,s)로 학습")
     p.add_argument("--sens_keys", type=str, default=None,
                    help=("민감 컬럼 리스트 또는 프리셋 키워드. "
@@ -46,7 +47,8 @@ def parse_args():
 
     # Method selection
     p.add_argument("--method", type=str, required=True,
-                   choices=["dr", "dr_subgroup_subset", "dr_subgroup_subset_3q","gerryfair", "multicalib", "sequential", "reduction"])
+                   choices=["dr", "dr_subgroup_subset", "dr_subgroup_subset_3q", "dr_subgroup_subset_random",
+                             "gerryfair", "multicalib", "sequential", "reduction", "unfair", "reg"])
 
     # Reduction (fairlearn ExponentiatedGradient) baseline
     p.add_argument("--red_constraint", type=str, default="DP",
@@ -75,15 +77,25 @@ def parse_args():
                 help="다운샘플 시드(미지정시 --seed 사용)")
     p.add_argument("--n_low_frac", type=float, default=None,
                 help="partial subgroup: 최소지지 비율 (0~1). 지정 시 n_low보다 우선")
+    
+    p.add_argument("--n_low_test", type=int, default=10,
+                help="test partial subgroup fairness: 최소 서브그룹 크기 임계값")
+
+        # ★ Marginal CE (ours)
+    p.add_argument("--mf_lambda", type=float, default=1.0, help="fairness weight λ")
+    p.add_argument("--mf_lr", type=float, default=1e-3)
+    p.add_argument("--mf_wd", type=float, default=1e-6)
+    p.add_argument("--mf_epochs", type=int, default=200)
+    p.add_argument("--mf_base", type=str, default="linear", choices=["linear", "mlp"])
 
 
     # GerryFair
-    p.add_argument("--gamma", type=float, default=0.01,
+    p.add_argument("--gamma", type=float, default=1.0,
                    help="GerryFair gamma (페어니스 강도/허용 위반 수준)")
     p.add_argument("--gf_base", type=str, default="logistic",
                    choices=["logistic", "linear", "mlp_clf", "mlp_reg"])
-    p.add_argument("--gf_max_iters", type=int, default=10)
-    p.add_argument("--gf_C", type=float, default=50.0)
+    p.add_argument("--gf_max_iters", type=int, default=200)
+    p.add_argument("--gf_C", type=float, default=0.0)
     p.add_argument("--gf_fairness", type=str, default="SP",
                    choices=["FP", "FN", "FPR", "FNR", "SP"])
     p.add_argument('--decision_threshold', type=float, default=0.5)
@@ -116,6 +128,29 @@ def parse_args():
                         help="N초마다 heartbeat 로그 (0이면 끔)")
     p.add_argument("--results-csv", type=str, default="../results/0909/all_runs.csv",
                    help="실험 결과를 누적 저장할 CSV 경로")
+
+    # ---- DR 공정성/학습 관련 ----
+    p.add_argument("--fair_conf_gamma", type=float, default=1.0,
+                help="confidence weight exponent: |sigmoid(logit)-0.5|^gamma")
+    p.add_argument("--fair_margin", type=float, default=0.0,
+                help="hinge margin on |corr| (dead zone)")
+    p.add_argument("--fair_adv_steps", type=int, default=3,
+                help="adversary (g,v) updates per epoch for DR")
+    p.add_argument("--fair_warmup_epochs", type=int, default=30,
+                help="linear warmup epochs for fairness weight (0=off)")
+    p.add_argument("--dr_temp_gz", type=float, default=1.0,
+                help="temperature (scale) for g(z) logits in DR")
+    
+    # apriori
+    p.add_argument("--agg_max_len", type=int, default=400,
+                help="Apriori union 최대 길이")
+    p.add_argument("--agg_max_cols", type=int, default=2048,
+                help="생성 가능한 최대 subgroup-subset 수")
+    p.add_argument("--agg_repeat", type=int, default=64,
+                help="배치 단위에서 랜덤/샘플링 반복 횟수 (batch_C에서 사용)")
+    p.add_argument("--agg_repeat_test", type=int, default=30,
+                help="배치 단위에서 랜덤/샘플링 반복 횟수 (batch_C에서 사용)")
+
 
     return p.parse_args()
 
@@ -193,6 +228,7 @@ def main():
         "method": args.method,
         "seed": args.seed,
         "q": getattr(args, "q", None),
+        "agg_repeat": getattr(args, "agg_repeat", None),
 
         # 데이터/민감속성 설정
         "x_sensitive": args.x_sensitive,
@@ -235,6 +271,11 @@ def main():
         "red_eps": getattr(args, "red_eps", None),
         "red_max_iter": getattr(args, "red_max_iter", None),
         "red_base": getattr(args, "red_base", None),
+
+        # Reg
+        "reg_lambda": getattr(args, "mf_lambda", None),
+        "reg_base": getattr(args, "mf_base", None),
+
 
         # 로더 메타(있으면 기록)
         "x_sensitive_mode": meta.get("x_sensitive_mode"),

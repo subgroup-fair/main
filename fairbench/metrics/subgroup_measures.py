@@ -5,10 +5,12 @@ from tqdm import tqdm
 ## 건웅이가 넘겨준거: SPD/FPR/MC (worst, mean, marginal)
 #########################################################
 ## 우리가 실험할 metrics (subgroup-based)
-## [vv] 1) sup_mmd_dfcols: 두 분포의 MMD.                                                                  - singleton subgroup
-## [vv] 2) sup_w1_dfcols: 두 분포의 WD.                                                                     - singleton subgroup
-## [vv] 3) sup_mmd_over_V: 전체 vs 각 subgroup 분포 MMD의 최댓값.                                           - 𝒱 (subgroup subset)
-## [vv] 4) sup_w1_over_V: 전체 vs 각 subgroup 분포 WD의 최댓값.                                             - 𝒱 (subgroup subset)
+## 0-1 ) sup_mmd: subgroup vs 전체 분포 MMD 차이 최댓값
+## 0-2 ) sup_w1: subgroup vs 전체 분포     Wasserstein-1 (1D) for empirical distributions. 차이 최댓값
+## [vv] 1) sup_mmd_dfcols: subgroup vs complement MMD.                                                                  - singleton subgroup
+## [vv] 2) sup_w1_dfcols: subgroup vs complement WD.                                                                     - singleton subgroup
+## [vv] 3) sup_mmd_over_V: subgroup subset vs complement MMD 차이의 최댓값.                                           - 𝒱 (subgroup subset)
+## [vv] 4) sup_w1_over_V: subgroup subset vs complement WD 차이의 최댓값.                                             - 𝒱 (subgroup subset)
 
 ## [v] 5,6) worst/mean worst_group_spd, mean_group_spd: SPD.                                                - singleton subgroup
 ## [vv] 7,8) worst/mean worst_weighted_group_spd, mean_weighted_group_spd : 그룹 빈도로 가중 평균된 SPD.          - singleton subgroup
@@ -21,11 +23,56 @@ from tqdm import tqdm
 ## 2) worst/mean subgroup/marginal multicalibration gap
 #########################################################
 
-
+import numpy as np, random, torch
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
 
 # parameter
 # min_support: 그룹에 이거보다 샘플 수 적으면 metric 계산 안할게
 # sigma: MMD에 있는 RBF kernel bandwidth (None이면 샘플간 거리의 중앙값을 쓰겠다)
+
+import numpy as np
+
+
+def _rate(pred):
+    return float(np.mean(pred)) if len(pred) > 0 else np.nan
+
+# ---------- 교차(2^q) 그룹 유틸 ----------
+def _to_bin_matrix(S_or_list):
+    """S_or_list -> (n,q) binary ndarray (0/1)"""
+    if isinstance(S_or_list, list):
+        keys = list(S_or_list[0].keys())
+        A = np.array([[int(s[k]) for k in keys] for s in S_or_list], dtype=int)
+    else:
+        A = np.asarray(S_or_list.values)
+        if A.ndim == 1:
+            A = A[:, None]
+        A = np.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
+        A = np.rint(A).astype(int)
+    uniq_vals = np.unique(A)
+    if not set(uniq_vals.tolist()).issubset({0, 1}):
+        raise ValueError(f"S must be binary (0/1). Got values {uniq_vals}.")
+    return A
+
+def _ensure_same_n(n_vec, S_bin):
+    if S_bin.shape[0] != n_vec:
+        raise ValueError(
+            f"Length mismatch: vector has n={n_vec} but S has n={S_bin.shape[0]}. "
+            "Make sure you pass the *test* S (not stacked) matching proba/pred/y."
+        )
+
+def _full_group_ids(S_bin):
+    """(n,q) 0/1 -> gid (n,), total groups G=2^q"""
+    q = S_bin.shape[1]
+    coeff = (1 << np.arange(q, dtype=np.int64))  # 1,2,4,8,...
+    gid = S_bin.astype(np.int64) @ coeff
+    G = 1 << q
+    return gid, G
+
+
 
 def _as_mask_list_from_V(V, n):
     """
@@ -226,49 +273,88 @@ def sup_w1_over_V(proba, V, min_support=5):
 
 ## [v] 5,6) worst/mean subgroup_spd: SPD.
 
-def worst_group_spd(proba, S_or_list):
-    """max_g |Pr(h=1|g) - Pr(h=1)|; h는 proba>=0.5 대체 (측정 시에만)"""
-    arr = (proba>=0.5).astype(int)
-    overall = _rate(arr)
-    worst = 0.0
-    if isinstance(S_or_list, list):
-        keys = list(S_or_list[0].keys())
-        m_all = {k: np.array([int(s[k]) for s in S_or_list]) for k in keys}
-        for k,m in m_all.items():
-            a = arr[m==1]; 
-            if len(a)>5: worst = max(worst, abs(_rate(a)-overall))
-        return float(worst)
-    else:
-        for c in S_or_list.columns:
-            m = S_or_list[c].values.astype(int)
-            a = arr[m==1]
-            if len(a)>5: worst = max(worst, abs(_rate(a)-overall))
-        return float(worst)
+# def worst_group_spd(proba, S_or_list):
+#     """max_g |Pr(h=1|g) - Pr(h=1)|; h는 proba>=0.5 대체 (측정 시에만)"""
+#     arr = (proba>=0.5).astype(int)
+#     overall = _rate(arr)
+#     worst = 0.0
+#     if isinstance(S_or_list, list):
+#         keys = list(S_or_list[0].keys())
+#         m_all = {k: np.array([int(s[k]) for s in S_or_list]) for k in keys}
+#         for k,m in m_all.items():
+#             a = arr[m==1]; 
+#             if len(a)>5: worst = max(worst, abs(_rate(a)-overall))
+#         return float(worst)
+#     else:
+#         for c in S_or_list.columns:
+#             m = S_or_list[c].values.astype(int)
+#             a = arr[m==1]
+#             if len(a)>5: worst = max(worst, abs(_rate(a)-overall))
+#         return float(worst)
 
 
-def mean_group_spd(proba, S_or_list, thr=0.5, min_support=5):
-    """
-    평균 SPD gap: mean_g |Pr(h=1|g) - Pr(h=1)|  (측정시에만 h = 1(proba>=thr))
-    - tabular: S_or_list = DataFrame (0/1 컬럼)
-    - image:   S_or_list = list[dict] (각 dict의 키가 민감 속성)
-    """
-    arr = (proba.reshape(-1) >= thr).astype(int)
-    overall = float(arr.mean()) if len(arr) > 0 else np.nan
-    diffs = []
-    if isinstance(S_or_list, list):  # image 스타일
-        keys = list(S_or_list[0].keys())
-        m_all = {k: np.array([int(s[k]) for s in S_or_list]) for k in keys}
-        for k, m in m_all.items():
-            a = arr[m == 1]
-            if a.size >= min_support:
-                diffs.append(abs(float(a.mean()) - overall))
-    else:  # DataFrame
-        for c in S_or_list.columns:
-            m = S_or_list[c].values.astype(int)
-            a = arr[m == 1]
-            if a.size >= min_support:
-                diffs.append(abs(float(a.mean()) - overall))
-    return float(np.mean(diffs)) if len(diffs) > 0 else 0.0
+# def mean_group_spd(proba, S_or_list, thr=0.5, min_support=5):
+#     """
+#     평균 SPD gap: mean_g |Pr(h=1|g) - Pr(h=1)|  (측정시에만 h = 1(proba>=thr))
+#     - tabular: S_or_list = DataFrame (0/1 컬럼)
+#     - image:   S_or_list = list[dict] (각 dict의 키가 민감 속성)
+#     """
+#     arr = (proba.reshape(-1) >= thr).astype(int)
+#     overall = float(arr.mean()) if len(arr) > 0 else np.nan
+#     diffs = []
+#     if isinstance(S_or_list, list):  # image 스타일
+#         keys = list(S_or_list[0].keys())
+#         m_all = {k: np.array([int(s[k]) for s in S_or_list]) for k in keys}
+#         for k, m in m_all.items():
+#             a = arr[m == 1]
+#             if a.size >= min_support:
+#                 diffs.append(abs(float(a.mean()) - overall))
+#     else:  # DataFrame
+#         for c in S_or_list.columns:
+#             m = S_or_list[c].values.astype(int)
+#             a = arr[m == 1]
+#             if a.size >= min_support:
+#                 diffs.append(abs(float(a.mean()) - overall))
+#     return float(np.mean(diffs)) if len(diffs) > 0 else 0.0
+
+def worst_group_spd(proba, S_or_list, thr=0.5, min_support=1):
+    p = np.asarray(proba, float).reshape(-1)
+    yhat = (np.nan_to_num(p, nan=-np.inf) >= thr).astype(int)
+    if yhat.size == 0: return 0.0
+
+    S_bin = _to_bin_matrix(S_or_list)
+    if S_bin.shape[0] != yhat.shape[0]:
+        raise ValueError(f"n mismatch: proba {yhat.shape[0]} vs S {S_bin.shape[0]}")
+    gid, G = _full_group_ids(S_bin)
+
+    overall = float(yhat.mean())
+    cnt = np.bincount(gid, minlength=G)
+    s1  = np.bincount(gid, weights=yhat, minlength=G)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean_g = np.where(cnt>0, s1/cnt, np.nan)
+    diffs = np.abs(mean_g - overall)
+    mask  = (cnt >= min_support) & np.isfinite(diffs)
+    return float(np.nanmax(diffs[mask])) if np.any(mask) else 0.0
+
+def mean_group_spd(proba, S_or_list, thr=0.5, min_support=1):
+    p = np.asarray(proba, float).reshape(-1)
+    yhat = (np.nan_to_num(p, nan=-np.inf) >= thr).astype(int)
+    if yhat.size == 0: return 0.0
+
+    S_bin = _to_bin_matrix(S_or_list)
+    if S_bin.shape[0] != yhat.shape[0]:
+        raise ValueError(f"n mismatch: proba {yhat.shape[0]} vs S {S_bin.shape[0]}")
+    gid, G = _full_group_ids(S_bin)
+
+    overall = float(yhat.mean())
+    cnt = np.bincount(gid, minlength=G)
+    s1  = np.bincount(gid, weights=yhat, minlength=G)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean_g = np.where(cnt>0, s1/cnt, np.nan)
+    diffs = np.abs(mean_g - overall)
+    mask  = (cnt >= min_support) & np.isfinite(diffs)
+    return float(np.nanmean(diffs[mask])) if np.any(mask) else 0.0
+
 
 
 
@@ -448,85 +534,113 @@ def mean_weighted_spd_over_V(proba, V, thr=0.5, min_support=5):
 #########################################################
 
 
+def worst_group_fpr_gap(pred, y, S_or_list, min_support=1):
+    pred = np.asarray(pred).reshape(-1).astype(int)
+    y    = np.asarray(y).reshape(-1).astype(int)
+    if pred.size == 0 or y.size == 0: return 0.0
+    if pred.shape[0] != y.shape[0]:
+        raise ValueError(f"n mismatch: pred {pred.shape[0]} vs y {y.shape[0]}")
 
-def worst_group_fpr_gap(pred, y, S_df):
-    """max_g |FPR_g - FPR_all|, FPR = P(h=1|y=0)"""
-    pred = pred.reshape(-1); y=y.reshape(-1)
-    mask_all = (y==0); 
-    if mask_all.sum()<5: return np.nan
-    fpr_all = (pred[mask_all]==1).mean()
-    worst=0.0
-    for c in S_df.columns:
-        m = (S_df[c].values==1)&(y==0)
-        if m.sum()<5: continue
-        fpr = (pred[m]==1).mean()
-        worst=max(worst, abs(fpr-fpr_all))
-    return float(worst)
+    S_bin = _to_bin_matrix(S_or_list)
+    if S_bin.shape[0] != pred.shape[0]:
+        raise ValueError(f"n mismatch: pred {pred.shape[0]} vs S {S_bin.shape[0]}")
+    gid, G = _full_group_ids(S_bin)
 
-def multicalib_worst_gap(proba, y, S_df, bins=10):
-    """max_g max_b |E[y|score in bin & g] - avg(score in bin & g)|"""
-    proba=proba.reshape(-1); y=y.reshape(-1)
-    edges = np.linspace(0,1,bins+1)
-    worst=0.0
-    for c in S_df.columns:
-        m = S_df[c].values==1
-        if m.sum()<10: continue
-        for i in range(bins):
-            lo,hi = edges[i], edges[i+1]
-            idx = m & (proba>=lo) & (proba<hi)
-            if idx.sum()<10: continue
-            gap = abs(y[idx].mean() - proba[idx].mean())
-            worst=max(worst, float(gap))
-    return worst if worst>0 else 0.0
+    y0 = (y == 0)
+    if y0.sum() < min_support: return 0.0
+    fpr_all = float((pred[y0] == 1).mean())
+
+    gid0 = gid[y0]
+    cnt0 = np.bincount(gid0, minlength=G)
+    s10  = np.bincount(gid0, weights=(pred[y0] == 1).astype(float), minlength=G)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fpr_g = np.where(cnt0>0, s10/cnt0, np.nan)
+    diffs = np.abs(fpr_g - fpr_all)
+    mask  = (cnt0 >= min_support) & np.isfinite(diffs)
+    return float(np.nanmax(diffs[mask])) if np.any(mask) else 0.0
 
 
-def mean_group_fpr_gap(pred, y, S_df, min_support=5):
-    """
-    평균 FPR gap: mean_g |FPR_g - FPR_all|,  FPR = P(h=1 | y=0)
-    - pred: {0,1} 예측 (이미 threshold 적용된 값 사용 권장)
-    - y: {0,1} 라벨
-    - S_df: 각 컬럼이 0/1인 그룹 마스크
-    """
-    pred = pred.reshape(-1)
-    y = y.reshape(-1)
-    mask_all = (y == 0)
-    if mask_all.sum() < min_support:
-        return np.nan
-    fpr_all = float((pred[mask_all] == 1).mean())
+def multicalib_worst_gap(proba, y, S_or_list, bins=10, min_support=1):
+    proba = np.asarray(proba, float).reshape(-1)
+    y     = np.asarray(y).reshape(-1).astype(float)
+    if proba.size == 0 or y.size == 0: return 0.0
+    if proba.shape[0] != y.shape[0]:
+        raise ValueError(f"n mismatch: proba {proba.shape[0]} vs y {y.shape[0]}")
 
-    gaps = []
-    for c in S_df.columns:
-        m = (S_df[c].values == 1) & (y == 0)
-        if m.sum() < min_support:
-            continue
-        fpr = float((pred[m] == 1).mean())
-        gaps.append(abs(fpr - fpr_all))
-    return float(np.mean(gaps)) if len(gaps) > 0 else 0.0
+    S_bin = _to_bin_matrix(S_or_list)
+    if S_bin.shape[0] != proba.shape[0]:
+        raise ValueError(f"n mismatch: proba {proba.shape[0]} vs S {S_bin.shape[0]}")
+    gid, G = _full_group_ids(S_bin)
 
+    # bin 인덱스 (0..bins-1), 마지막 bin은 1.0 포함
+    b = np.clip((proba * bins).astype(int), 0, bins - 1)
+    key = gid * bins + b
+    size = G * bins
 
-def multicalib_mean_gap(proba, y, S_df, bins=10, min_support=10):
-    """
-    평균 multicalibration gap:
-      mean_{g,b} | E[y | p in bin & g] - E[p | p in bin & g] |
-    - proba ∈ [0,1], y ∈ {0,1}
-    - bin마다/그룹마다 표본이 min_support 이상일 때만 포함
-    """
-    proba = proba.reshape(-1)
-    y = y.reshape(-1)
-    edges = np.linspace(0, 1, bins + 1)
-    gaps = []
-    for c in S_df.columns:
-        m_g = (S_df[c].values == 1)
-        if m_g.sum() < min_support:
-            continue
-        for i in range(bins):
-            lo, hi = edges[i], edges[i + 1]
-            idx = m_g & (proba >= lo) & (proba < hi if i < bins - 1 else proba <= hi)
-            if idx.sum() < min_support:
-                continue
-            gaps.append(abs(float(y[idx].mean()) - float(proba[idx].mean())))
-    return float(np.mean(gaps)) if len(gaps) > 0 else 0.0
+    cnt = np.bincount(key, minlength=size)
+    sy  = np.bincount(key, weights=y,      minlength=size)
+    sp  = np.bincount(key, weights=proba,  minlength=size)
 
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ey = np.where(cnt>0, sy/cnt, np.nan)
+        ep = np.where(cnt>0, sp/cnt, np.nan)
+        gap = np.abs(ey - ep)
+
+    valid = (cnt >= min_support) & np.isfinite(gap)
+    return float(np.nanmax(gap[valid])) if np.any(valid) else 0.0
+
+def mean_group_fpr_gap(pred, y, S_or_list, min_support=1):
+    pred = np.asarray(pred).reshape(-1).astype(int)
+    y    = np.asarray(y).reshape(-1).astype(int)
+    if pred.size == 0 or y.size == 0: return 0.0
+    if pred.shape[0] != y.shape[0]:
+        raise ValueError(f"n mismatch: pred {pred.shape[0]} vs y {y.shape[0]}")
+
+    S_bin = _to_bin_matrix(S_or_list)
+    if S_bin.shape[0] != pred.shape[0]:
+        raise ValueError(f"n mismatch: pred {pred.shape[0]} vs S {S_bin.shape[0]}")
+    gid, G = _full_group_ids(S_bin)
+
+    y0 = (y == 0)
+    if y0.sum() < min_support: return 0.0
+    fpr_all = float((pred[y0] == 1).mean())
+
+    gid0 = gid[y0]
+    cnt0 = np.bincount(gid0, minlength=G)
+    s10  = np.bincount(gid0, weights=(pred[y0] == 1).astype(float), minlength=G)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fpr_g = np.where(cnt0>0, s10/cnt0, np.nan)
+    diffs = np.abs(fpr_g - fpr_all)
+    mask  = (cnt0 >= min_support) & np.isfinite(diffs)
+    return float(np.nanmean(diffs[mask])) if np.any(mask) else 0.0
+
+def multicalib_mean_gap(proba, y, S_or_list, bins=10, min_support=1):
+    proba = np.asarray(proba, float).reshape(-1)
+    y     = np.asarray(y).reshape(-1).astype(float)
+    if proba.size == 0 or y.size == 0: return 0.0
+    if proba.shape[0] != y.shape[0]:
+        raise ValueError(f"n mismatch: proba {proba.shape[0]} vs y {y.shape[0]}")
+
+    S_bin = _to_bin_matrix(S_or_list)
+    if S_bin.shape[0] != proba.shape[0]:
+        raise ValueError(f"n mismatch: proba {proba.shape[0]} vs S {S_bin.shape[0]}")
+    gid, G = _full_group_ids(S_bin)
+
+    b = np.clip((proba * bins).astype(int), 0, bins - 1)
+    key = gid * bins + b
+    size = G * bins
+
+    cnt = np.bincount(key, minlength=size)
+    sy  = np.bincount(key, weights=y,      minlength=size)
+    sp  = np.bincount(key, weights=proba,  minlength=size)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ey = np.where(cnt>0, sy/cnt, np.nan)
+        ep = np.where(cnt>0, sp/cnt, np.nan)
+        gap = np.abs(ey - ep)
+
+    valid = (cnt >= min_support) & np.isfinite(gap)
+    return float(np.nanmean(gap[valid])) if np.any(valid) else 0.0
 
 
 # =====================================================================
@@ -559,7 +673,7 @@ def _mask_from_key(S_or_list, key):
     else:
         return S_or_list[key].values.astype(int)
 
-def _spd_for_family(arr01, S_or_list, keys, min_support=5):
+def _spd_for_family(arr01, S_or_list, keys, min_support=1):
     """
     family 안에서의 SPD 정의:
       - keys가 1개(이진 속성): |Pr(h=1|S=1) - Pr(h=1|S=0)|
@@ -581,7 +695,7 @@ def _spd_for_family(arr01, S_or_list, keys, min_support=5):
         return np.nan
     return float(np.max(rates) - np.min(rates))
 
-def _fpr_for_family(pred01, y, S_or_list, keys, min_support=5):
+def _fpr_for_family(pred01, y, S_or_list, keys, min_support=1):
     """
     family 안에서의 FPR 정의(위와 동일한 방식으로):
       - binary: |FPR(S=1) - FPR(S=0)|
@@ -617,7 +731,7 @@ def _fpr_for_family(pred01, y, S_or_list, keys, min_support=5):
         return np.nan
     return float(np.max(vals) - np.min(vals))
 
-def _mc_for_family(proba, y, S_or_list, keys, bins=10, min_support=10):
+def _mc_for_family(proba, y, S_or_list, keys, bins=10, min_support=1):
     """
     family 안에서의 multicalibration worst gap:
       - binary: max_b gap(S=1,b), gap(S=0,b) 중 최대
@@ -656,10 +770,8 @@ def _mc_for_family(proba, y, S_or_list, keys, bins=10, min_support=10):
         return np.nan
     return float(np.max(gaps))
 
-
-
 # -------- Marginal SPD --------
-def marginal_spd_worst(proba, S_or_list, thr=0.5, min_support=5, families=None):
+def marginal_spd_worst(proba, S_or_list, thr=0.5, min_support=1, families=None):
     arr01 = (proba.reshape(-1) >= thr).astype(int)
     fam = families or _families_from_S(S_or_list)
     vals = []
@@ -669,7 +781,7 @@ def marginal_spd_worst(proba, S_or_list, thr=0.5, min_support=5, families=None):
             vals.append(v)
     return float(np.max(vals)) if len(vals) else 0.0
 
-def marginal_spd_mean(proba, S_or_list, thr=0.5, min_support=5, families=None):
+def marginal_spd_mean(proba, S_or_list, thr=0.5, min_support=1, families=None):
     arr01 = (proba.reshape(-1) >= thr).astype(int)
     fam = families or _families_from_S(S_or_list)
     vals = []
@@ -680,7 +792,7 @@ def marginal_spd_mean(proba, S_or_list, thr=0.5, min_support=5, families=None):
     return float(np.mean(vals)) if len(vals) else 0.0
 
 # -------- Marginal FPR --------
-def marginal_fpr_worst(pred, y, S_or_list, min_support=5, families=None):
+def marginal_fpr_worst(pred, y, S_or_list, min_support=1, families=None):
     fam = families or _families_from_S(S_or_list)
     vals = []
     for a, keys in fam.items():
@@ -689,7 +801,7 @@ def marginal_fpr_worst(pred, y, S_or_list, min_support=5, families=None):
             vals.append(v)
     return float(np.max(vals)) if len(vals) else 0.0
 
-def marginal_fpr_mean(pred, y, S_or_list, min_support=5, families=None):
+def marginal_fpr_mean(pred, y, S_or_list, min_support=1, families=None):
     fam = families or _families_from_S(S_or_list)
     vals = []
     for a, keys in fam.items():
@@ -699,7 +811,7 @@ def marginal_fpr_mean(pred, y, S_or_list, min_support=5, families=None):
     return float(np.mean(vals)) if len(vals) else 0.0
 
 # -------- Marginal Multicalibration --------
-def marginal_mc_worst(proba, y, S_or_list, bins=10, min_support=10, families=None):
+def marginal_mc_worst(proba, y, S_or_list, bins=10, min_support=1, families=None):
     fam = families or _families_from_S(S_or_list)
     vals = []
     for a, keys in fam.items():
@@ -708,7 +820,7 @@ def marginal_mc_worst(proba, y, S_or_list, bins=10, min_support=10, families=Non
             vals.append(v)
     return float(np.max(vals)) if len(vals) else 0.0
 
-def marginal_mc_mean(proba, y, S_or_list, bins=10, min_support=10, families=None):
+def marginal_mc_mean(proba, y, S_or_list, bins=10, min_support=1, families=None):
     fam = families or _families_from_S(S_or_list)
     vals = []
     for a, keys in fam.items():

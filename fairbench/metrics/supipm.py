@@ -1,6 +1,13 @@
 # fairbench/metrics/supipm.py
 import numpy as np
 
+import numpy as np, random, torch
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
+
 def _mmd2_rbf(x, y, sigma=0.5):
     # x,y: 1D probabilities
     def k(a,b): 
@@ -41,14 +48,14 @@ def supipm_wasserstein(proba, S_or_list, min_support=5):
         keys = list(S_or_list[0].keys())
         for k in keys:
             m = np.array([int(s[k]) for s in S_or_list])
-            a = arr[m==1]; b = arr[m==0]
+            a = arr[m==1]; b = arr
             if len(a) > min_support and len(b) > min_support:
                 supv = max(supv, _wasserstein1d_ot(a, b))
         return float(supv)
     else:
         for c in S_or_list.columns:
             m = S_or_list[c].values.astype(int)
-            a = arr[m==1]; b = arr[m==0]
+            a = arr[m==1]; b = arr
             if len(a) > min_support and len(b) > min_support:
                 supv = max(supv, _wasserstein1d_ot(a, b))
         return float(supv)
@@ -67,7 +74,7 @@ def supipm_rbf(proba, S_or_list, sigma=0.5):
         arr = proba.reshape(-1)
         for k in keys:
             m = np.array([int(s[k]) for s in S_or_list])
-            a = arr[m==1]; b = arr[m==0]
+            a = arr[m==1]; b = arr
             if len(a)>5 and len(b)>5:
                 supv = max(supv, np.sqrt(max(_mmd2_rbf(a,b,sigma), 0)))
         return float(supv)
@@ -75,7 +82,7 @@ def supipm_rbf(proba, S_or_list, sigma=0.5):
         supv = 0.0; arr = proba.reshape(-1)
         for c in S_or_list.columns:
             m = S_or_list[c].values.astype(int)
-            a = arr[m==1]; b = arr[m==0]
+            a = arr[m==1]; b = arr
             if len(a)>5 and len(b)>5:
                 supv = max(supv, np.sqrt(max(_mmd2_rbf(a,b,sigma), 0)))
         return float(supv)

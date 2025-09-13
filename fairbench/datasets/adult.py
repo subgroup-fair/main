@@ -5,6 +5,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from ..utils.trainval import split_train_val
 from .shrink import shrink_smallest_by_global_frac
+import numpy as np, random, torch
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
 
 def _fetch_adult(folder):
     import pandas as pd, numpy as np
@@ -285,7 +291,7 @@ def load_adult(args):
     # if sens_keys and all(k in str(sens_keys).lower() for k in ["sex","race","age","marital"]):
     #     assert set(S.columns) == expected, f"Expected {expected}, got {set(S.columns)}"
 
-    mode = getattr(args, "x_sensitive", "drop")
+    mode = getattr(args, "x_sensitive", "concat")
 
     sens_raw_all = [c for c in [
         "sex","race","age","marital-status",
@@ -312,7 +318,7 @@ def load_adult(args):
     cat = X_for_fe.select_dtypes(include=["object"]).columns.tolist()
     num = X_for_fe.select_dtypes(exclude=["object"]).columns.tolist()
 
-    enc = OneHotEncoder(sparse=False, handle_unknown="ignore")
+    enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     X_cat = pd.DataFrame(enc.fit_transform(X_for_fe[cat]))
     X_cat.columns = enc.get_feature_names_out(cat)
 

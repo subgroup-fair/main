@@ -4,6 +4,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from ..utils.trainval import split_train_val
 from .shrink import shrink_smallest_by_global_frac
+import numpy as np, random, torch
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
 
 # 민감 변수 프리셋 (전처리본 별 열 이름이 다를 수 있어 후보를 넓게)
 _PRESET_SENS = {
@@ -103,7 +109,7 @@ def load_dutch(args):
     df = pd.read_csv(path + "dutch.csv")
 
     seed = getattr(args, "seed", 42)
-    x_mode = getattr(args, "x_sensitive", "drop")
+    x_mode = getattr(args, "x_sensitive", "concat")
     sens_keys = getattr(args, "sens_keys", "auto")
     sens_thresh = float(getattr(args, "sens_thresh", 0.5))
 
@@ -163,7 +169,7 @@ def load_dutch(args):
 
     # 범주 원핫
     if len(cat_cols) > 0:
-        enc = OneHotEncoder(sparse=False, handle_unknown="ignore")
+        enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
         X_cat_arr = enc.fit_transform(X_for_fe[cat_cols].astype(str))
         X_cat = pd.DataFrame(X_cat_arr, columns=enc.get_feature_names_out(cat_cols))
         Xp = pd.concat([X_num.reset_index(drop=True), X_cat.reset_index(drop=True)], axis=1)
