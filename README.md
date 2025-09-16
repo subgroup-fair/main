@@ -1,44 +1,4 @@
 # Quick README
----
-### Experiment Checklist
-실험 우선순위를 작성한 리스트입니다.. 다음 순서로 진행되고 있습니다.. 최우선목표는 어떤 결과든 뽑는 것...
-#### 실험 결과에 관하여
-- [x] 22q vs 3q
-- [ ] E1) 데이터: synthetic 조절변수:q
-- [ ] E2,3) 데이터: Real(A,C,D) 조절변수: n_low
-- [ ] E4) DR vs SupIPM 조절변수: lambda
-- [ ] E7,8)
-- [ ] E5,6)
-
-#### 코드 변경에 관하여
-- [ ] 현재 코드에 하드코딩된 부분 조절 가능하도록 변경, 조절하면서 실험
-      - xxx gamma(n_low/n 비율) xxx
-      - q(sensitive attribute 개수) q가 커질수록 가장 작은 subgroup의 size도 감소하도록 빌드
-      - real data에서 subgroup 하나의 샘플 개수 극단적으로 줄여보기(1,3,5,7, ...)
-
-- [ ] synthetic, real data subgroup sample 수 줄여서 확인
-- [ ] supIPM을 measure로 쓸 것인가? -> 2^2^q개라서 계산 힘듦. 그러니까 subgroup subset을 랜덤하게 뽑아서 계산하고, 그 계산을 여러번 해서 box plot으로 보여주기 (q가 큰 경우), q가 작은 경우는 (예: Dutch?) 2^2^2 = 16이므로 랜덤없이 정확한 값 계산 가능할듯
-- [ ] text data (toxic classification?) 분석하기 -> 세현이형 도움 받기 (여기서 multiple sensitive attribute을 정의 잘 해야 subgroup fairness가 될 듯)
-- [x] subgroup => subgroup subset
-- [x] synthetic data로 실험
-- [x] d(P_s,P_.) => d(P_s,P_s^c)
-      - metrics/supipm.py 에서 ```max_s over {0,1}^q```
-- [x] 현재 코드에 대한 이해, 디버깅, 신뢰성검증
-- [x] 각 서브그룹의 샘플 수 저장하도록 만들기
-      - fairbench/__init__.py main 함수에서 조절
-- [x] V 구성 전략 비교
-      - 현재(서브그룹만), 원소n개짜리 서브셋만 만들기, 민감변수에 대해 0,1,all 경우로 선택 3^q
-- [x] fairness measure는 8가지 (현재 논문의 MMD, WD, DR 학습 시 썼던 \mathcal{W}에 대한 supMMD, supWD, worstSUBGROUP, avgSUBGROUP, test data에서 그룹빈도로 가중치줘서 계산된 sum, sup subgroup fairness까지 추가)
-- [x] 22q실험 -> 오래걸리면 실용적방법 실행 -> 둘이 결과 비슷하다 리포트
-
-#### Q1
-- [ ] DR 학습 안정화
-      - fairbench/methods/dr.py
-      - validation 활용 얼리스타핑 / discriminator 구조 변경
-
-- [ ] 결과 그림 예쁘게 만들기
-
-
 
 ---
 
@@ -59,30 +19,18 @@
 
 ```bash
 # DR
-CPU_IDS="0-13" GPU_IDS=0,1 JOBS=6 ./run_sweep.sh dr
+GPU_IDS=0,1 JOBS=6 ./run_sweep.sh dr
 # GerryFair
-CPU_IDS="14-20" GPU_IDS=0,1 JOBS=6 X_SENSITIVE=drop ./run_sweep.sh gerryfair
+GPU_IDS=0,1 JOBS=6 X_SENSITIVE=drop ./run_sweep.sh gerryfair
 # Multicalibration
-CPU_IDS="20-26" GPU_IDS=2,3 JOBS=6 ./run_sweep.sh multicalib
+GPU_IDS=2,3 JOBS=6 ./run_sweep.sh multicalib
 # Reduction
-CPU_IDS="26-32" GPU_IDS=2,3 JOBS=6 ./run_sweep.sh reduction
+GPU_IDS=2,3 JOBS=6 ./run_sweep.sh reduction
 # Sequential
-CPU_IDS="32-39" GPU_IDS=2,3 JOBS=6 ./run_sweep.sh sequential
+GPU_IDS=2,3 JOBS=6 ./run_sweep.sh sequential
 ```
+
 - 여기서 X_SENSITIVE=drop은 f에 S를 입력 변수로 안 쓴다는 의미인데, GerryFair는 자체적으로 S를 쓴다고 알고 있어서 (확실치 않음) drop으로 넣어야 구조적 에러 없이 S를 입력 변수로 쓸 수 있을 듯.
-
-`run_sweep_synthetic.sh` 가상데이터는 따로
-```bash
-CPU_IDS="0-13" GPU_IDS=0,1 JOBS=6 ./run_sweep_synthetic.sh dr
-
-CPU_IDS="14-20" GPU_IDS=0,1 JOBS=6 X_SENSITIVE=drop ./run_sweep_synthetic.sh gerryfair
-
-CPU_IDS="20-26" GPU_IDS=2,3 JOBS=6 ./run_sweep_synthetic.sh multicalib
-
-CPU_IDS="26-32" GPU_IDS=2,3 JOBS=6 ./run_sweep_synthetic.sh reduction
-
-CPU_IDS="32-39" GPU_IDS=2,3 JOBS=6 ./run_sweep_synthetic.sh sequential
-```
 
 ### Arguments
 
@@ -210,32 +158,15 @@ shrink_seed: shrink 샘플링에 쓸 시드.
 
     accuracy: 테스트 정확도(일반적으로 검증셋에서 임계값 튜닝 후 테스트에 평가).
 
-  1-12 구현은 전부 f vs f^c or V vs V^c
+    supipm_rbf: RBF 커널 기반 sup-IPM(서브그룹 함수족에 대한 최악의 평균 차이; 낮을수록 좋음).
 
- 1. sup_mmd_dfcols: 두 분포의 MMD.                                                                  - singleton subgroup
- 2. sup_w1_dfcols: 두 분포의 WD.                                                                     - singleton subgroup
- 3. sup_mmd_over_V: 전체 vs 각 subgroup 분포 MMD의 최댓값.                                           - 𝒱 (subgroup subset)
- 4. sup_w1_over_V: 전체 vs 각 subgroup 분포 WD의 최댓값.                                             - 𝒱 (subgroup subset)
- 5. 5-6  worst/mean worst_group_spd, mean_group_spd: SPD.                                                - singleton subgroup
- 7. 7-8 worst/mean worst_weighted_group_spd, mean_weighted_group_spd : 그룹 빈도로 가중 평균된 SPD.          - singleton subgroup
- 9. 9-10 worst/mean worst_spd_over_V,mean_spd_over_V : SPD.                                                - 𝒱 (subgroup subset)
- 11. 11-12 worst/mean worst_weighted_spd_over_V, mean_weighted_spd_over_V: 그룹 빈도로 가중 평균된 SPD.        - 𝒱 (subgroup subset)
-  
-
----
-    supipm_rbf: RBF 커널 기반 sup-IPM(서브그룹 함수족에 대한 최악의 평균 차이; 낮을수록 좋음). f vs all
-
-    supipm_w1: Lipschitz(=W1 계열) 함수족 기반 sup-IPM(예상 분포 차이; 낮을수록 좋음). f vs all
+    supipm_w1: Lipschitz(=W1 계열) 함수족 기반 sup-IPM(예상 분포 차이; 낮을수록 좋음).
 
     spd_worst, spd_mean: 통계적 패리티 차이( |P(ŷ=1|g)−P(ŷ=1|g′)| )의 최악값/평균값.
-
----
 
     fpr_worst, fpr_mean: 거짓양성률(FPR) 격차 최악/평균.
 
     mc_worst, mc_mean: 멀티캘리브레이션 위반( |E[Y−p(X) | g, bin]| ) 최악/평균.
-
----
 
     marg_spd_worst, marg_spd_mean: 단일 속성별(주변, marginal) 서브그룹만 고려했을 때의 SPD 최악/평균(교차/결합 서브그룹은 제외).
 

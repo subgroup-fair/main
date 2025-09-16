@@ -11,12 +11,47 @@ from fairbench.datasets import load_dataset   # 통합 로더
 from fairbench.methods import run_method      # 통합 메서드 실행
 from fairbench.metrics import compute_metrics # accuracy, supIPM, subgroup metrics
 
+import logging, sys, os
+from pathlib import Path
+def setup_logging(save_dir, method, dataset, seed):
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    log_dir = Path(save_dir) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{method}_{dataset}.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter(fmt="%(asctime)s %(levelname).1s %(name)s:%(lineno)d - %(message)s",
+                            datefmt="%Y-%m-%d %H:%M:%S")
+    # 콘솔
+    sh = logging.StreamHandler(sys.stdout); sh.setFormatter(fmt)
+    # 파일
+    fh = logging.FileHandler(log_path, encoding="utf-8"); fh.setFormatter(fmt)
+    root.handlers = [sh, fh]
+    logging.captureWarnings(True)  # warnings 모듈도 logging으로
+
+# --- print를 logger로 리다이렉트 ---
+import builtins, inspect
+_orig_print = builtins.print
+def _print_to_log(*args, **kwargs):
+    sep = kwargs.get("sep", " "); end = kwargs.get("end", "\n")
+    msg = sep.join(str(a) for a in args)
+    # 호출 위치를 찍어주면 파일/라인 추적이 쉬움
+    frame = inspect.currentframe().f_back
+    mod = frame.f_globals.get("__name__", "?"); lineno = frame.f_lineno
+    logging.getLogger(mod).info(f"{msg}")  # 라인번호는 포맷터에서 %(lineno)d로
+    # 화면에도 그대로 내보내고 싶으면 다음 주석 해제
+    # _orig_print(*args, **kwargs)
+builtins.print = _print_to_log
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Subgroup Fairness Bench")
 
     # Dataset & data options
     p.add_argument("--dataset", type=str, required=True,
-                   choices=["toy_manyq", "adult", "communities", "dutch", "celebA"])
+                   choices=["adult", "sparse_adult", "communities", "dutch", "civilcomments"])
+                #    choices=["toy_manyq", "adult", "communities", "dutch", "celebA"])
     p.add_argument("--data_dir", type=str, default="../data/raw/")
     p.add_argument("--q", type=int, default=100, help="toy_manyq sensitive count")
 
@@ -32,6 +67,9 @@ def parse_args():
                          "예: 'race_basic' 또는 'sex,age,education_num'"))
     p.add_argument("--sens_thresh", type=float, default=0.5,
                    help="민감 수치 컬럼 이진화 분위수 임계(0~1)")
+    p.add_argument("--base_model", type=str, default="mlp",
+                    choices=["mlp", "linear"],
+                   help="drop: 민감 원본컬럼을 X에서 제거, keep: 유지, concat: S를 X에 붙여 f(x,s)로 학습")
 
     # Dataset-specific optional paths
     p.add_argument("--dutch_path", type=str, default="data/raw/dutch.csv",
@@ -150,6 +188,10 @@ def parse_args():
                 help="배치 단위에서 랜덤/샘플링 반복 횟수 (batch_C에서 사용)")
     p.add_argument("--agg_repeat_test", type=int, default=30,
                 help="배치 단위에서 랜덤/샘플링 반복 횟수 (batch_C에서 사용)")
+    p.add_argument("--union_mode", type=str, default="pack",
+                   choices=["pack", "all", "apriori", "apriori_forward"])
+    
+    p.add_argument("--sparse_n_groups", type=int, default=5)
 
 
     return p.parse_args()
@@ -157,13 +199,16 @@ def parse_args():
 def main():
     args = parse_args()
     set_seed(args.seed)
+    setup_logging(save_dir=args.save_dir, method=args.method, dataset=args.dataset, seed=args.seed)
+
 
     # --- logger / heartbeat setup ---
     from fairbench.utils.logging_utils import setup_logger, Timer, Heartbeat
     log = setup_logger("fair", args.logfile or None)
     hb = Heartbeat(log, args.heartbeat_secs)
     hb.start()
-    log.info(f"args: {{k: v for k, v in vars(args).items() if k not in ['password', 'token']}}")
+    for k, v in vars(args).items():
+        print(f"  {k} = {v}")
 
     exp_name = args.exp_name or f"{args.dataset}_{args.method}_seed{args.seed}_{int(time.time())}"
     save_dir = Path(args.save_dir); save_dir.mkdir(exist_ok=True, parents=True)
@@ -176,15 +221,15 @@ def main():
     run_sec = np.nan
     metrics_sec = np.nan
 
-    # 1) 데이터 로딩 + 2) 방법 실행
+    # 1) 데이터 로딩 
     try:
         t0 = time.perf_counter()
         with Timer(log, "prepare_data"):
             data = load_dataset(args)
-            # import pdb; pdb.set_trace() 
         prep_sec = time.perf_counter() - t0
         log.info("[data] prepared")
 
+        # 2) 방법 실행
         t1 = time.perf_counter()
         with Timer(log, f"run_method:{args.method}"):
             pred_pack = run_method(args, data)
@@ -196,6 +241,7 @@ def main():
     # 3) 측정
     t2 = time.perf_counter()
     report = compute_metrics(args, data, pred_pack)
+    # import pdb; pdb.set_trace()
     metrics_sec = time.perf_counter() - t2
 
     # ---- 타이밍/메타 정보 구성 ----

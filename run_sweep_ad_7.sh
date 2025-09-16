@@ -80,7 +80,7 @@ ds_args() {
 # DR
 DR_LAMS=(0.00 0.01 0.02 0.05 0.10 0.20 0.30 0.50 0.70 1.00 1.20 1.50 2.00 5.00 10.00 20.0 50.0 100.0 200.0 500.0 1000.0 2000.0 5000.0 10000.0)
 # DR_LAMS=(0.00)
-DR_NLOWS_FRAC=(0.05 0.1 0.2 0.5)
+DR_NLOWS_FRAC=(0.001 0.002 0.005 0.01 0.02 0.05 0.1 0.2 0.5)
 DR_NLOWS_CSV="${DR_NLOWS_CSV:-0}"
 IFS=' ' read -r -a DR_NLOWS <<< "$DR_NLOWS_CSV"
 
@@ -146,16 +146,16 @@ enqueue() { CMDS+=("$*"); }
 
 build_dr_subgroup_subset_3q_cmds() {
   local ds extra seed lam nlow nlow_frac
-  for ds in communities adult dutch; do
-    extra=$(ds_args "$ds")
-    for lam in "${DR_LAMS[@]}"; do
-      for nlow_frac in "${DR_NLOWS_FRAC[@]}"; do
+  for nlow_frac in "${DR_NLOWS_FRAC[@]}"; do
+    for ds in adult dutch communities; do
+      extra=$(ds_args "$ds")
+      for lam in "${DR_LAMS[@]}"; do
         for seed in "${SEED_ARR[@]}"; do
           for agg_repeat in "${AGG_REPEATS[@]}"; do
             enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method dr_subgroup_subset_random \
-              --lambda_fair $lam --n_low_frac $nlow_frac --agg_repeat $agg_repeat \
+              --lambda_fair $lam --union_mode all --n_low_frac $nlow_frac\
               --x_sensitive $X_SENSITIVE --seed $seed --fair_conf_gamma 1.2 --fair_margin 0.02 --fair_warmup_epochs 40 \
-              --save_dir \"../1006_mlp_$SAVE_DIR/$nlow_frac/dr_$ds\""
+              --save_dir \"../test_gerry_edit_$SAVE_DIR/$nlow_frac/dr_$ds\""
           done
         done
       done

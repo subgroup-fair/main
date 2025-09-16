@@ -251,10 +251,44 @@ def build_V_apriori_from_S_list(S_list, T, agg_max_len=4, agg_max_cols=2048, key
     print(f"[V-pack] built |V|={len(V)} (after pos/neg>=T and max_cols)")
     return V, choices
 
+# ===== [NEW] k-차(정확히 k개 열 AND) 교차집단 마스크 생성 =====
+def _apriori_exact_k_unions_from_df(S_df, T, k, max_cols=None, log_prefix="afk"):
+    """
+    S_df: (N x q) {0,1} DataFrame
+    T   : subset & complement 최소 지원 수
+    k   : 정확히 k차 교차집단만 생성 (열 k개 AND)
+    max_cols: 생성할 최대 개수 (None이면 제한 없음)
+    return: List[np.ndarray(bool)]
+    """
+    import numpy as np
+    from itertools import combinations
+
+    N, q = len(S_df), S_df.shape[1]
+    if N == 0 or q == 0 or T <= 0 or k <= 0 or k > q:
+        print(f"[{log_prefix}] skip: N={N}, q={q}, T={T}, k={k}")
+        return []
+
+    X = S_df.values.astype(np.int8)  # (N,q) in {0,1}
+    out = []
+    kept = 0
+    for comb in combinations(range(q), k):
+        m = X[:, comb].all(axis=1)      # 교차집단: 열 k개 AND
+        cnt = int(m.sum()); comp = N - cnt
+        if cnt >= T and comp >= T:
+            out.append(m)
+            kept += 1
+            if (max_cols is not None) and (kept >= int(max_cols)):
+                print(f"[{log_prefix}] reached max_cols={max_cols}; stop early")
+                break
+    print(f"[{log_prefix}] exact-k={k} kept={kept}")
+    return out
+
+
+# ===== [NEW] 1~q차 전체(또는 max_order까지) 교차집단 마스크 생성 =====
+from ..methods.dr_subgroup_subset_random import _apriori_forward_unions_from_df
+
 #####################################
 from tqdm import tqdm
-
-
 
 ######################################################
 def compute_metrics(args, data, pred_pack):
@@ -268,11 +302,7 @@ def compute_metrics(args, data, pred_pack):
     min_support = int(getattr(args, "min_support", 1))
     mc_bins = getattr(args, "mc_bins", 10)
     mc_min_support = int(getattr(args, "mc_min_support", 1))
-    use_ap = bool(getattr(args, "agg_apriori", True) or getattr(args, "apriori_union", True) or getattr(args, "V_apriori", True))
-    agg_max_len = int(getattr(args, "agg_max_len_test", 400))
     agg_max_cols = int(getattr(args, "agg_max_cols", 2048))
-    agg_repeat   = int(getattr(args, "agg_repeat_test", 30))     # [NEW]
-    agg_seed     = getattr(args, "agg_seed", None)          # [NEW]
 
 
     n_low = getattr(args, "n_low_test", None)
@@ -287,6 +317,40 @@ def compute_metrics(args, data, pred_pack):
         y = np.concatenate(ys) if len(ys) > 0 else None
         S = Ss; N = len(S)
 
+
+    # score dist 뽑아보는 용
+
+    # from pathlib import Path; import numpy as np
+    # # if proba is not None:
+    # outdir = Path("../scores3"); outdir.mkdir(parents=True, exist_ok=True)
+    # stem = f"scores_{getattr(args,'dataset','data')}_{getattr(args,'method','meth')}_seed{getattr(args,'seed','NA')}"
+    # np.save(outdir / f"{stem}.npy", np.asarray(proba).ravel())
+    # tmp = f"truey_{getattr(args,'dataset','data')}_{getattr(args,'method','meth')}_seed{getattr(args,'seed','NA')}"
+    # np.save(outdir / f"{tmp}.npy", np.asarray(y).ravel())
+    # tmp = f"trues_{getattr(args,'dataset','data')}_{getattr(args,'method','meth')}_seed{getattr(args,'seed','NA')}"
+    # # S → 2D 행렬로 통일
+    # # import pdb; pdb.set_trace()
+    # if hasattr(S, "values"):  # pandas DataFrame
+    #     S_mat = S.values
+    # elif isinstance(S, list) and len(S) > 0 and isinstance(S[0], dict):  # list[dict]
+    #     keys = list(S[0].keys())
+    #     S_mat = np.array([[int(bool(si[k])) for k in keys] for si in S], dtype=np.int64)
+    # else:  # numpy or 기타
+    #     S_mat = np.asarray(S)
+    #     if S_mat.ndim == 1:
+    #         S_mat = S_mat.reshape(-1, 1)
+
+    # # 행 단위 유니크 조합 → 1..K 그룹 ID
+    # _, inv = np.unique(S_mat, axis=0, return_inverse=True)
+    # group_id = (inv + 1).astype(np.int64)  # 1-based
+    # print(group_id)
+
+    # np.save(outdir / f"{tmp}.npy", group_id)
+    
+    # report["proba_path"] = str(outdir / f"{stem}.npy")
+
+
+
     n_low = int(np.ceil(N / 32))
     T = n_low
     # if (n_low_frac is not None) and (n_low_frac > 0) and N > 0:
@@ -298,53 +362,80 @@ def compute_metrics(args, data, pred_pack):
     # min support는 marginal fair, subgroup fair에서 min_support 이상인 것만 사용
     # n_low는 subgroup subset fair에서 subset 내부 원소 개수가 n_low 이상인 것을 사용
 
+    V_mode_list = [[1], [2], [3], [1,2], [1,2,3]]
     V, V_choices = None, None
-    print("performance) V counting ...")
-    try:
-        if use_ap:
-            print("  using random-pack V builder ...")  # [변경된 라벨]
-            if isinstance(S, list) and len(S) > 0 and isinstance(S[0], dict):
-                print("1")
-                V, V_choices = build_V_apriori_from_S_list(
-                    S, T, agg_max_len=agg_max_len, agg_max_cols=agg_max_cols,
-                    agg_repeat=agg_repeat, seed=agg_seed                # [NEW]
-                )
-            elif hasattr(S, "columns"):
-                print("2")
-                V, V_choices = build_V_apriori_from_S_df(
-                    S, T, agg_max_len=agg_max_len, agg_max_cols=agg_max_cols,
-                    agg_repeat=agg_repeat, seed=agg_seed                # [NEW]
-                )
-            else:
-                V, V_choices = [], []
-            V_mode = "random_pack_unions"              # [변경된 모드명]
-    except Exception:
-        V, V_choices = [], []
-        V_mode = "error"
-    print(f"[V] mode={V_mode}, T={T}, count={len(V)}, repeat={agg_repeat}")  # [로그 보강]
-    if V_choices is not None:
-        K = min(15, len(V_choices))
-        for i in range(K):
-            print(f"[V#{i} // {len(V_choices)}] {V_choices[i]}")
 
-    report["V_mode"] = V_mode
-    report["V_count"] = len(V) if V is not None else 0
-    # report["V_choices"] = V_choices if V_choices is not None else []
-    if isinstance(V, list) and len(V) > 0:
-        sizes = [int(v.sum()) for v in V]
-        report["V_stats"] = dict(
-            mode=V_mode, count=len(V),
-            size_min=int(np.min(sizes)), size_p50=float(np.median(sizes)),
-            size_max=int(np.max(sizes)), T=int(T),
-            agg_max_len=int(agg_max_len), agg_max_cols=int(agg_max_cols),
-            agg_repeat=int(agg_repeat)                 # [NEW]
-        )
-    else:
-        report["V_stats"] = dict(mode=V_mode, count=0, min_support = min_support, test_n_low = n_low, agg_repeat=int(agg_repeat))  # [NEW]
+    print("[Performance] V counting ...")
+    for V_mode in V_mode_list:
+        V = None
+        print("[Performance]: ", V_mode)
+        if len(V_mode) == 1:
+        # ===== [NEW] 정확히 k차만 고려한 supIPM =====
+
+            masks_np = _apriori_exact_k_unions_from_df(
+                S, T, k=V_mode[0], max_cols=agg_max_cols, log_prefix=f"afk{V_mode[0]}"
+            )
+            if len(masks_np) == 0:
+                V, V_choices = [], []
+            else:
+                V = [m.astype(bool) for m in masks_np]
+                V_choices = [("af_exact_k", V_mode[0], f"pos={int(m.sum())}", f"neg={int(len(m)-m.sum())}") for m in masks_np[:min(15, len(masks_np))]]
+
+        elif len(V_mode) > 1:
+            # ===== [NEW] 1~K차(또는 af_max_order까지) 모두 고려한 supIPM =====
+            masks_np = _apriori_forward_unions_from_df(
+                S, T, max_order=V_mode[-1], max_cols=agg_max_cols, log_prefix="afa"
+            )
+            if len(masks_np) == 0:
+                V, V_choices = [], []
+            else:
+                V = [m.astype(bool) for m in masks_np]
+                V_choices = [("af_all", f"len={len(masks_np)}", f"max_order={V_mode[-1]}", f"T={T}")]
+        
+        report[f"V_mode_{V_mode}"] = V_choices
+        print("=== sup_mmd_over_V, sup_w1_over_V START ===")
+        if (proba is not None) and (V is not None):
+            try:
+                report[f"sup_mmd_over_V_{V_mode}"] = float(sup_mmd_over_V(proba, V, min_support=n_low)) 
+                report[f"sup_w1_over_V_{V_mode}"] = float(sup_w1_over_V(proba, V, min_support=n_low))
+            except Exception: report[f"sup_w1_over_V_{V_mode}"] = np.nan
+        else:
+            report[f"sup_mmd_over_V_{V_mode}"] = np.nan; report[f"sup_w1_over_V_{V_mode}"] = np.nan
+        print(f"[metric] sup_w1_over_V = {report[f'sup_w1_over_V_{V_mode}']}")
+
+
+        print("=== DP over V (sup/mean) START ===")
+        if (proba is not None) and (V is not None):
+            try: report[f"worst_spd_over_V_{V_mode}"] = float(worst_spd_over_V(proba, V, thr=thr, min_support=n_low))
+            except Exception: report[f"worst_spd_over_V_{V_mode}"] = np.nan
+            try: report[f"mean_spd_over_V_{V_mode}"] = float(mean_spd_over_V(proba, V, thr=thr, min_support=n_low))
+            except Exception: report[f"mean_spd_over_V_{V_mode}"] = np.nan
+        else:
+            report[f"worst_spd_over_V_{V_mode}"] = np.nan; report[f"mean_spd_over_V_{V_mode}"] = np.nan
+        print(f"[metric] worst_spd_over_V = {report[f'worst_spd_over_V_{V_mode}']}")
+        print(f"[metric] mean_spd_over_V = {report[f'mean_spd_over_V_{V_mode}']}")
+
+
+        print("=== Weighted SPD over V START ===")
+        if (proba is not None) and (V is not None):
+            try: report[f"worst_weighted_spd_over_V_{V_mode}"] = float(worst_weighted_spd_over_V(proba, V, thr=thr, min_support=n_low))
+            except Exception: report[f"worst_weighted_spd_over_V_{V_mode}"] = np.nan
+            try: report[f"mean_weighted_spd_over_V_{V_mode}"] = float(mean_weighted_spd_over_V(proba, V, thr=thr, min_support=n_low))
+            except Exception: report[f"mean_weighted_spd_over_V_{V_mode}"] = np.nan
+        else:
+            report[f"worst_weighted_spd_over_V_{V_mode}"] = np.nan; report[f"mean_weighted_spd_over_V_{V_mode}"] = np.nan
+        print(f"[metric] worst_weighted_spd_over_V = {report[f'worst_weighted_spd_over_V_{V_mode}']}")
+        print(f"[metric] mean_weighted_spd_over_V = {report[f'mean_weighted_spd_over_V_{V_mode}']}")
+
+
+    # V랑 상관없는 것들
+    
     print("=== accuracy START ===")
     report["accuracy"] = accuracy(y, pred) if (y is not None and pred is not None) else np.nan
     print(f"[metric] accuracy = {report['accuracy']}")
     print("=== accuracy END ===")
+
+
     print("=== supIPM(overall) START ===")
     if proba is not None and S is not None:
         try: report["supipm_rbf"] = float(supipm_rbf(proba, S))
@@ -356,6 +447,8 @@ def compute_metrics(args, data, pred_pack):
     print(f"[metric] supipm_rbf = {report['supipm_rbf']}")
     print(f"[metric] supipm_w1 = {report['supipm_w1']}")
     print("=== supIPM(overall) END ===")
+
+
     print("=== sup_mmd_dfcols, sup_w1_dfcols START ===")
     if (data["type"] == "tabular") and (proba is not None) and (S is not None):
         try: report["sup_mmd_dfcols"] = float(sup_mmd_dfcols(proba, S, min_support=min_support))
@@ -366,15 +459,8 @@ def compute_metrics(args, data, pred_pack):
         report["sup_mmd_dfcols"] = np.nan; report["sup_w1_dfcols"] = np.nan
     print(f"[metric] sup_mmd_dfcols = {report['sup_mmd_dfcols']}")
     print(f"[metric] sup_w1_dfcols = {report['sup_w1_dfcols']}")
-    print("=== sup_mmd_over_V, sup_w1_over_V START ===")
-    if (proba is not None) and (V is not None):
-        try:
-            # report["sup_mmd_over_V"] = float(sup_mmd_over_V(proba, V, min_support=n_low)) 
-            report["sup_w1_over_V"] = float(sup_w1_over_V(proba, V, min_support=n_low))
-        except Exception: report["sup_w1_over_V"] = np.nan
-    else:
-        report["sup_mmd_over_V"] = np.nan; report["sup_w1_over_V"] = np.nan
-    print(f"[metric] sup_w1_over_V = {report['sup_w1_over_V']}")
+
+
     print("=== SPD(singleton) START ===")
     if proba is not None and S is not None:
         try: report["spd_worst"] = float(worst_group_spd(proba, S))
@@ -385,6 +471,8 @@ def compute_metrics(args, data, pred_pack):
         report["spd_worst"] = np.nan; report["spd_mean"] = np.nan
     print(f"[metric] worst_group_spd = {report['spd_worst']}")
     print(f"[metric] mean_group_spd = {report['spd_mean']}")
+
+
     print("=== Weighted SPD(singleton) START ===")
     if proba is not None and S is not None:
         try: report["worst_weighted_group_spd"] = float(worst_weighted_group_spd(proba, S, thr=thr, min_support=min_support))
@@ -395,26 +483,11 @@ def compute_metrics(args, data, pred_pack):
         report["worst_weighted_group_spd"] = np.nan; report["mean_weighted_group_spd"] = np.nan
     print(f"[metric] worst_weighted_group_spd = {report['worst_weighted_group_spd']}")
     print(f"[metric] mean_weighted_group_spd = {report['mean_weighted_group_spd']}")
-    print("=== DP over V (sup/mean) START ===")
-    if (proba is not None) and (V is not None):
-        try: report["worst_spd_over_V"] = float(worst_spd_over_V(proba, V, thr=thr, min_support=n_low))
-        except Exception: report["worst_spd_over_V"] = np.nan
-        try: report["mean_spd_over_V"] = float(mean_spd_over_V(proba, V, thr=thr, min_support=n_low))
-        except Exception: report["mean_spd_over_V"] = np.nan
-    else:
-        report["worst_spd_over_V"] = np.nan; report["mean_spd_over_V"] = np.nan
-    print(f"[metric] worst_spd_over_V = {report['worst_spd_over_V']}")
-    print(f"[metric] mean_spd_over_V = {report['mean_spd_over_V']}")
-    print("=== Weighted SPD over V START ===")
-    if (proba is not None) and (V is not None):
-        try: report["worst_weighted_spd_over_V"] = float(worst_weighted_spd_over_V(proba, V, thr=thr, min_support=n_low))
-        except Exception: report["worst_weighted_spd_over_V"] = np.nan
-        try: report["mean_weighted_spd_over_V"] = float(mean_weighted_spd_over_V(proba, V, thr=thr, min_support=n_low))
-        except Exception: report["mean_weighted_spd_over_V"] = np.nan
-    else:
-        report["worst_weighted_spd_over_V"] = np.nan; report["mean_weighted_spd_over_V"] = np.nan
-    print(f"[metric] worst_weighted_spd_over_V = {report['worst_weighted_spd_over_V']}")
-    print(f"[metric] mean_weighted_spd_over_V = {report['mean_weighted_spd_over_V']}")
+
+
+
+
+    print("=== marginal metric START ===")
     if (data["type"] == "tabular") and (pred is not None) and (y is not None) and (S is not None):
         try: report["fpr_worst"] = float(worst_group_fpr_gap(pred, y, S))
         except Exception: report["fpr_worst"] = np.nan
@@ -450,4 +523,6 @@ def compute_metrics(args, data, pred_pack):
         except Exception: report["marg_mc_mean"] = np.nan
     else:
         report["marg_mc_worst"] = np.nan; report["marg_mc_mean"] = np.nan
+
+
     return report

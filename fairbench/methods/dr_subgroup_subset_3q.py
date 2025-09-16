@@ -56,7 +56,7 @@ class Discriminator(nn.Module):
         self.net = nn.Sequential(nn.Linear(1,32), nn.ReLU(), nn.Linear(32,16), nn.ReLU(), nn.Linear(16,1))
     def forward(self, z): return self.net(z)
 
-def artanh_corr(yv, gz, eps=1e-6):
+def artanh_corr_old(yv, gz, eps=1e-6):
     y_c = yv - yv.mean()
     g_c = gz - gz.mean()
     y_std = torch.sqrt((y_c**2).mean() + eps); g_std = torch.sqrt((g_c**2).mean() + eps)
@@ -64,6 +64,19 @@ def artanh_corr(yv, gz, eps=1e-6):
     corr_abs = torch.clamp(torch.abs(corr), 0.0, 1.0-1e-6)
     return torch.atanh(corr_abs)
 
+def artanh_corr(yv, gz, eps=1e-6):
+    print("new r^2")
+    ## y_c = v^t*c, g_c = g(f(x,s))
+    y_c = yv - yv.mean()
+    g_c = gz - gz.mean()
+
+    y_std = torch.sqrt((y_c**2).mean() + eps)
+    # g_std = torch.sqrt((g_c**2).mean() + eps)
+
+    rr = (y_c*g_c).mean()/(y_std + eps)
+    corr_abs = torch.clamp(torch.abs(rr/2), 0.0, 1.0-1e-6)
+
+    return torch.atanh(corr_abs)
 
 
 

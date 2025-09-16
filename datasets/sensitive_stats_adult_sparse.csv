@@ -1,0 +1,17 @@
+split,subgroup,count,proportion,n,columns
+all,not sex Male & not race White & not age ge 40 & not married,1689,0.06648035897032196,25406,sex_Male;race_White;age_ge_40;married
+all,not sex Male & not race White & not age ge 40 & married,233,0.009171061953869165,25406,sex_Male;race_White;age_ge_40;married
+all,not sex Male & not race White & age ge 40 & not married,1051,0.041368180744705975,25406,sex_Male;race_White;age_ge_40;married
+all,not sex Male & not race White & age ge 40 & married,192,0.0075572699362355346,25406,sex_Male;race_White;age_ge_40;married
+all,not sex Male & race White & not age ge 40 & not married,6817,0.2683224435172794,25406,sex_Male;race_White;age_ge_40;married
+all,not sex Male & race White & not age ge 40 & married,1116,0.04392663150436905,25406,sex_Male;race_White;age_ge_40;married
+all,not sex Male & race White & age ge 40 & not married,4130,0.1625600251908998,25406,sex_Male;race_White;age_ge_40;married
+all,not sex Male & race White & age ge 40 & married,7,0.0002755254664252539,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & not race White & not age ge 40 & not married,1511,0.05947413996693694,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & not race White & not age ge 40 & married,789,0.031055656144217902,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & not race White & age ge 40 & not married,500,0.019680390458946706,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & not race White & age ge 40 & married,8,0.0003148862473431473,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & race White & not age ge 40 & not married,9,0.0003542470282610407,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & race White & not age ge 40 & married,7340,0.28890813193733766,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & race White & age ge 40 & not married,9,0.0003542470282610407,25406,sex_Male;race_White;age_ge_40;married
+all,sex Male & race White & age ge 40 & married,5,0.00019680390458946706,25406,sex_Male;race_White;age_ge_40;married

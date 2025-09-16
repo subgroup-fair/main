@@ -88,22 +88,30 @@ class NoneFair(BaseFair):
 # <-- NEW 1004
 class DRFair(BaseFair):
     def __init__(self, args, data, device):
+        self._v_prev = None  # ← 이전 v 저장해 드리프트(코사인) 확인용
         self.device = device
         self.args = args
 
         S_tr = data["S_train"]
+        # (A) n_low_frac 기본값 적용: args에 없으면 1% 사용
+        n_low_frac_eff = getattr(args, "n_low_frac", None)
+        if n_low_frac_eff is None:
+            n_low_frac_eff = float(getattr(args, "n_low_frac_default", 0.01))  # 1% 기본
         n_low      = getattr(args, "n_low", None)
-        n_low_frac = getattr(args, "n_low_frac", None)
         use_ap     = bool(getattr(args, "agg_apriori", True) or getattr(args, "apriori_union", False))
         agg_max_len  = int(getattr(args, "agg_max_len", 4))
         agg_max_cols = int(getattr(args, "agg_max_cols", 2048))
+        
 
         with torch.no_grad():
+            # (B) 마지널 항상 포함 옵션 전달
+            include_marg = bool(getattr(args, "include_marginals_always", False))
             C = build_C_tensor(
                 S_tr, args, device=device,
-                n_low=n_low, n_low_frac=n_low_frac,
+                n_low=n_low, n_low_frac=n_low_frac_eff,
                 apriori_union=use_ap, agg_max_len=agg_max_len, agg_max_cols=agg_max_cols
-            )  # [N, M]
+            )  # shape: [N, M]
+
 
         # [NEW] 컬럼 정규화(평균0, L2=1) → 상관 안정화, 희소성 영향 완화
         if C.numel() > 0:
@@ -112,9 +120,11 @@ class DRFair(BaseFair):
         self.Ctr = C
 
         # [NEW] 하이퍼
-        self.gamma  = float(getattr(args, "fair_conf_gamma", 1.0))     # 0~2 추천
+        self.gamma  = float(getattr(args, "fair_conf_gamma",0.5))     # 0~2 추천
         self.margin = float(getattr(args, "fair_margin", 0.0))         # 0.0~0.03 추천
         self.adv_steps = int(getattr(args, "fair_adv_steps", 3))
+        self.dr_clip  = float(getattr(args, "fair_dr_clip", 3.0))  # <<< ADD: 폭주 방지
+
 
         # v, g
         self.v = nn.Parameter(torch.randn(self.Ctr.shape[1], device=device))
@@ -123,8 +133,21 @@ class DRFair(BaseFair):
 
         self.g = Discriminator().to(device)
         base_lr = float(getattr(args, "lr", 1e-3))
-        self.opt_g = torch.optim.Adam(self.g.parameters(), lr=3.0 * base_lr)
-        self.opt_v = torch.optim.Adam([self.v], lr=10.0 * base_lr)
+        self.opt_g = torch.optim.Adam(self.g.parameters(), lr=1.5 * base_lr)
+        self.opt_v = torch.optim.Adam([self.v], lr=4.0 * base_lr)
+
+    # utils/fair_losses.py  (DRFair 안)
+    def diag_bundle(self, logits: torch.Tensor):
+        """
+        브레이크다운/시각화용 진단 패키지 반환.
+        - C: [N, M], yv, gz, w (모두 detach)
+        """
+        with torch.no_grad():
+            v_unit = self._v_unit()
+            yv = (self.Ctr @ v_unit).detach()
+            gz = self.g(torch.sigmoid(logits).unsqueeze(1)).squeeze(-1).detach()
+            w  = self._conf_weight(logits).detach()
+        return {"C": self.Ctr, "yv": yv, "gz": gz, "w": w}
 
     def _v_unit(self):
         return self.v / (self.v.norm() + 1e-12)
@@ -136,236 +159,366 @@ class DRFair(BaseFair):
 
         # w = (p - 0.5).abs().pow(self.gamma).detach()
         return w + 1e-6  # 완전 0 방지
-
+    
     def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+        """
+        f 업데이트용 패널티 (train에서는 Ctr 사용, val/test에서는 g만 사용).
+        """
+        N = logits.shape[0]
+
+        # 평가 모드(val/test): 입력 크기가 train과 다르면 self.Ctr 못 씀
+        if N != self.Ctr.shape[0]:
+            gz = self.g(torch.sigmoid(logits).unsqueeze(1)).squeeze(-1)
+            # 여기서는 C가 없으니 corr 대신 단순 분산 측정 (fallback)
+            return (gz.std() * 0.0).to(logits.device)  # 그냥 0 반환 (평가용)
+        
+        # ---- 훈련 모드 (train과 크기 같을 때) ----
         if self.Ctr.shape[1] == 0:
             return torch.zeros((), device=logits.device)
 
         with torch.no_grad():
             v_unit = self._v_unit()
-            yv = (self.Ctr @ v_unit).detach()      # (N,)
-        gz = self.g(logits.unsqueeze(1)).squeeze(-1)   # (N,)
+            yv = (self.Ctr @ v_unit).detach()
+        gz = self.g(torch.sigmoid(logits).unsqueeze(1)).squeeze(-1)
+        w  = self._conf_weight(logits)
 
-        # [NEW] confidence 가중 상관 + margin hinge
-        w = self._conf_weight(logits)
         corr = artanh_corr(w * yv, w * gz)
         pen = F.relu(corr.abs() - self.margin)
+        if self.dr_clip is not None and self.dr_clip > 0:
+            pen = torch.clamp(pen, max=self.dr_clip)
         return pen
 
+
+    
     def after_f_step(self, f, X_tr: torch.Tensor) -> None:
         if self.Ctr.shape[1] == 0:
             return
-
         for _ in range(self.adv_steps):
             with torch.no_grad():
                 logit_det = f(X_tr).detach()
+
             v_unit = self._v_unit()
             yv = (self.Ctr @ v_unit)
-            gz = self.g(logit_det.unsqueeze(1)).squeeze(-1)
-            # [NEW] 동일 가중으로 maximize
+            gz = self.g(torch.sigmoid(logit_det).unsqueeze(1)).squeeze(-1)
             w = self._conf_weight(logit_det)
             dr = artanh_corr(w * yv, w * gz)
 
             self.opt_g.zero_grad()
-            (-dr).backward(retain_graph=True)
-            self.opt_g.step()
-
             self.opt_v.zero_grad()
             (-dr).backward()
+            self.opt_g.step()
             self.opt_v.step()
 
-        with torch.no_grad():
-            self.v.data = self.v.data / (self.v.data.norm() + 1e-12)
+            with torch.no_grad():
+                self.v.copy_(self.v / (self.v.norm() + 1e-12))
 
 
-# # ---------- DR(너가 쓰던 v, g, Ctr) 버전 ----------
-# class DRFair(BaseFair):
-#     def __init__(self, args, data, device):
+# # === DRFair 아래에 추가: Marginal CE(=Reg) 패널티 ===
+# class RegFair(BaseFair):
+#     """
+#     sum_g | P(hatY=1 | g) - P(hatY=1) |  (마진별 편차의 합)
+#     - adversary 없음 → after_f_step() 불필요
+#     - lam 스케일은 트레이너에서 곱함
+#     """
+#     def __init__(self, args, data, device, min_support=0.1):
 #         self.device = device
-#         self.args = args
-
-#         # --- 데이터에서 그룹 텐서 만들기 ---
-#         S_tr = data["S_train"]
-#         n_low      = getattr(args, "n_low", None)
-#         n_low_frac = getattr(args, "n_low_frac", None)
-#         use_ap     = bool(getattr(args, "agg_apriori", True) or getattr(args, "apriori_union", False))
-#         agg_max_len  = int(getattr(args, "agg_max_len", 4))
-#         agg_max_cols = int(getattr(args, "agg_max_cols", 2048))
-
-#         with torch.no_grad():
-#             self.Ctr = build_C_tensor(
-#                 S_tr, args, device=device,
-#                 n_low=n_low, n_low_frac=n_low_frac,
-#                 apriori_union=use_ap, agg_max_len=agg_max_len, agg_max_cols=agg_max_cols
-#             )  # shape: [N, M]
-
-#         # --- v, g, optimizer 셋업 ---
-#         self.v = nn.Parameter(torch.randn(self.Ctr.shape[1], device=device))
-#         if self.Ctr.shape[1] > 0:
-#             self.v.data = self.v / (self.v.norm() + 1e-12)
-
-#         self.g = Discriminator().to(device)
-#         self.opt_g = torch.optim.Adam(self.g.parameters(), lr=getattr(args, "lr", 1e-3) * 3.0)
-#         self.opt_v = torch.optim.Adam([self.v], lr=getattr(args, "lr", 1e-3) * 10.0)
-
-#     def _v_unit(self):
-#         return self.v / (self.v.norm() + 1e-12)
+#         self.min_support = float(min_support)
+#         G_np, _ = _build_marginal_groups(data["S_train"])
+#         self.G = torch.tensor(G_np, device=device)  # (N, K)
 
 #     def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
-#         """
-#         f를 업데이트할 때 같이 미분되는 페널티.
-#         logits: (N,), probs: sigmoid(logits) (N,)
-#         """
-#         if self.Ctr.shape[1] == 0:
-#             return torch.zeros((), device=logits.device)
+#         if self.G.numel() == 0:
+#             return torch.zeros((), device=probs.device)
+#         base_pos = probs.mean()               # P(hatY=1)
+#         supp = self.G.sum(dim=0)              # (K,)
+#         valid = supp > self.min_support
+#         if not torch.any(valid):
+#             return torch.zeros((), device=probs.device)
+#         Gv = self.G[:, valid]                 # (N, Kv)
+#         suppv = supp[valid]                   # (Kv,)
+#         grp = (Gv.T @ probs) / suppv          # P(hatY=1 | g)
+#         return torch.abs(grp - base_pos).sum()
 
-#         with torch.no_grad():
-#             v_unit = self._v_unit()
-#             yv = (self.Ctr @ v_unit).detach()                 # stop-grad for yv
-
-#         gz = self.g(logits.unsqueeze(1)).squeeze(-1)          # (N,)
-#         dr = artanh_corr(yv, gz)                              # 스칼라
-#         return dr
-
-#     def after_f_step(self, f, X_tr: torch.Tensor) -> None:
-#         """
-#         f 스텝 이후 adversary(g), v를 maximize 쪽으로 몇 스텝 업데이트.
-#         """
-#         if self.Ctr.shape[1] == 0:
-#             return
-
-#         for _ in range(3):
-#             with torch.no_grad():
-#                 logit_det = f(X_tr).detach()
-#             v_unit = self._v_unit()
-#             yv = (self.Ctr @ v_unit)
-#             gz = self.g(logit_det.unsqueeze(1)).squeeze(-1)
-#             dr = artanh_corr(yv, gz)                          # maximize
-
-
-#             self.opt_g.zero_grad()
-#             (-dr).backward(retain_graph=True)
-#             self.opt_g.step()
-
-#             self.opt_v.zero_grad()
-#             (-dr).backward()
-#             self.opt_v.step()
-
-#         with torch.no_grad():
-#             self.v.data = self.v.data / (self.v.data.norm() + 1e-12)
-
-# === DRFair 아래에 추가: Marginal CE(=Reg) 패널티 ===
+# === DRFair 아래에 추가했던 RegFair를 이렇게 수정 ===
 class RegFair(BaseFair):
     """
-    sum_g | P(hatY=1 | g) - P(hatY=1) |  (마진별 편차의 합)
+    sum_g | P(hatY=1 | g) - P(hatY=1) |
     - adversary 없음 → after_f_step() 불필요
-    - lam 스케일은 트레이너에서 곱함
     """
     def __init__(self, args, data, device, min_support=0.5):
         self.device = device
+        # train/val 각각의 마스크를 생성
+        Gtr_np, _ = _build_marginal_groups(data["S_train"])
+        Gva_np, _ = _build_marginal_groups(data["S_val"])
+        self.G_tr = torch.tensor(Gtr_np, device=device, dtype=torch.float32)  # (N_tr, K)
+        self.G_va = torch.tensor(Gva_np, device=device, dtype=torch.float32)  # (N_val, K)
+        # min_support: 0<val<1이면 비율, 그 외는 개수로 해석
         self.min_support = float(min_support)
-        G_np, _ = _build_marginal_groups(data["S_train"])
-        self.G = torch.tensor(G_np, device=device)  # (N, K)
 
-    def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
-        if self.G.numel() == 0:
+    def after_f_step(self, f, X_tr):
+        # adversary 없음 → no-op
+        return
+
+    def _penalty_from_G(self, probs: torch.Tensor, G: torch.Tensor) -> torch.Tensor:
+        if G.numel() == 0:
             return torch.zeros((), device=probs.device)
-        base_pos = probs.mean()               # P(hatY=1)
-        supp = self.G.sum(dim=0)              # (K,)
-        valid = supp > self.min_support
+        base_pos = probs.mean()                 # P(hatY=1)
+        supp = G.sum(dim=0)                     # (K,)
+        # min_support 해석: 비율 또는 개수
+        thr = self.min_support * G.shape[0] if (0.0 < self.min_support < 1.0) else self.min_support
+        valid = supp >= max(1.0, thr)
         if not torch.any(valid):
             return torch.zeros((), device=probs.device)
-        Gv = self.G[:, valid]                 # (N, Kv)
-        suppv = supp[valid]                   # (Kv,)
-        grp = (Gv.T @ probs) / suppv          # P(hatY=1 | g)
+        Gv = G[:, valid]                        # (N, Kv)
+        suppv = torch.clamp(supp[valid], min=1.0)  # (Kv,)
+        grp = (Gv.T @ probs) / suppv            # (Kv,)
         return torch.abs(grp - base_pos).sum()
+
+    def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+        N = probs.shape[0]
+        # probs 길이에 따라 train/val 마스크 자동 선택
+        if N == self.G_tr.shape[0]:
+            G = self.G_tr
+        elif N == self.G_va.shape[0]:
+            G = self.G_va
+        else:
+            # (예: test 등) 안전하게 0 리턴 또는 원하는 쪽 선택
+            return torch.zeros((), device=probs.device)
+        return self._penalty_from_G(probs, G)
+
     
-    
-# === 여기부터 추가: SP-GD(=gerryfair) 패널티 ===
-class SPFair(BaseFair):
+# # fair_losses.py 내 SPFairAll를 다음처럼 교체 (핵심만)
+# class SPFairAll(BaseFair):
+#     """
+#     penalty = softmax-approx(max_g |E[p] - E[p|g]|) over all 2^q subgroups
+#     - adversary 없음
+#     - O(N + 2^q)
+#     """
+#     def __init__(self, args, data, device):
+#         self.device = device
+
+#         # 공통 q, M
+#         S_tr = data["S_train"]
+#         q = S_tr.shape[1]
+#         self.q = q
+#         self.M = 1 << q
+#         self.tau = 0.01
+#         self.min_prop = 0.0
+#         self.agg = "softmax"
+#         self.use_alpha = True
+
+#         # 비트 가중치 (1,2,4,...)
+#         self._w = (2 ** torch.arange(self.q, device=device, dtype=torch.long)).view(1, -1)
+
+#         def _make_gid(S_df):
+#             if S_df is None:
+#                 return None, 0
+#             S = S_df.values if hasattr(S_df, "values") else np.asarray(S_df)
+#             S = torch.tensor(S, dtype=torch.float32, device=device)
+#             S = (S > 0.5).to(torch.long)           # (N, q)
+#             gid = (S * self._w).sum(dim=1)         # (N,), in [0, 2^q)
+#             return gid, S.shape[0]
+
+#         self.group_id_tr, self.N_tr = _make_gid(data.get("S_train"))
+#         self.group_id_va, self.N_va = _make_gid(data.get("S_val"))
+#         self.group_id_te, self.N_te = _make_gid(data.get("S_test"))
+
+#     def _aggregate(self, delta):
+#         if self.agg == "max":
+#             return delta.max()
+#         if self.agg == "softmax":
+#             w = torch.softmax(delta / self.tau, dim=0)
+#             return (w * delta).sum()
+#         return self.tau * torch.logsumexp(delta / self.tau, dim=0)
+
+#     def after_f_step(self, f, X_tr):
+#         return  # no-op
+
+#     def _penalty_with_gid(self, p: torch.Tensor, gid: torch.Tensor, N_all: int) -> torch.Tensor:
+#         # p: (N,)  gid: (N,)
+#         if gid is None or gid.numel() == 0:
+#             return torch.zeros((), device=p.device, dtype=p.dtype)
+
+#         base = p.mean()
+#         sum_p = torch.zeros(self.M, device=p.device, dtype=p.dtype)
+#         cnt   = torch.zeros(self.M, device=p.device, dtype=p.dtype)
+
+#         sum_p.index_add_(0, gid, p)                   # ★ 길이 일치!
+#         cnt.index_add_(0, gid, torch.ones_like(p))
+
+#         mean_g = sum_p / cnt.clamp_min(1.0)
+#         delta  = (mean_g - base).abs()
+
+#         if self.min_prop > 0.0:
+#             mask = (cnt >= self.min_prop * float(N_all)).to(delta.dtype)
+#             delta = delta * mask
+
+#         if self.use_alpha:
+#             alpha = cnt / max(1.0, float(N_all))
+#             delta = alpha * delta
+
+#         return self._aggregate(delta)
+
+#     def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+#         N = probs.shape[0]
+#         if N == self.N_tr:
+#             return self._penalty_with_gid(probs, self.group_id_tr, self.N_tr)
+#         if N == self.N_va:
+#             return self._penalty_with_gid(probs, self.group_id_va, self.N_va)
+#         if N == self.N_te:
+#             return self._penalty_with_gid(probs, self.group_id_te, self.N_te)
+#         # 모르는 split이면 안전하게 0 (또는 여기서 on-the-fly로 gid 만들어도 됨)
+#         return torch.zeros((), device=probs.device, dtype=probs.dtype)
+
+
+class SPFairAll(BaseFair):
     """
-    Soft Demographic Parity (SP-GD) 스타일 페어니스 패널티.
-    penalty()는  softplus_beta( α * |SP_g - SP| ) / beta  를 반환.
-    after_f_step()에서 adversary g(S)를 (penalty - barrier) 최대화 방향으로 1~여러 스텝 업데이트.
+    penalty = softmax-approx(max_g |E[p] - E[p|g]|) over all 2^q subgroups
+    - adversary 없음
+    - O(N + 2^q) 시간/메모리
     """
     def __init__(self, args, data, device):
         self.device = device
+        S = data["S_train"]
+        S = S.values if hasattr(S, "values") else np.asarray(S)
+        S = torch.tensor(S, dtype=torch.float32, device=device)
+        # 보장: 0/1 이진
+        S = (S > 0.5).to(torch.long)
 
-        # hyperparams (gerryfair 계열 네이밍 유지)
-        self.lr_g     = float(getattr(args, "gf_lr_group", 1e-2))
-        self.temp_g   = float(getattr(args, "gf_temp_group", 50.0))
-        self.beta_sp  = float(getattr(args, "gf_softplus_temp", 200.0))  # 큰 값 권장
-        self.min_prop = float(getattr(args, "gf_min_group_prop", 0.01))
+        self.N, self.q = S.shape
+        self.M = 1 << self.q
+        # 비트 가중치 (1,2,4,...)
+        self.w = (2 ** torch.arange(self.q, device=device, dtype=torch.long)).view(1, -1)
+        self.group_id = (S * self.w).sum(dim=1)  # (N,) in [0, 2^q)
 
-        # S_train 텐서 저장
-        S_tr = data["S_train"]
-        if hasattr(S_tr, "values"):
-            S_tr = S_tr.values
-        S_tr = torch.tensor(np.asarray(S_tr, dtype=np.float32), device=device)
-        self.S_tr = S_tr
-        self.d_s = S_tr.shape[1] if S_tr.ndim == 2 else 0
+        # 하이퍼
+        self.tau = 0.01  # LSE/softmax 온도(작을수록 max 근사)
+        self.min_prop = 0.0  # 너무 작은 그룹 무시(비율)
+        self.agg = "softmax"  # "softmax" | "max"
+        self.use_alpha = True  # α_g 가중 사용 여부
 
-        # adversary g: 선형 + steep sigmoid
-        self.g = nn.Linear(self.d_s, 1, bias=True).to(device)
-        self.opt_g = torch.optim.Adam(self.g.parameters(), lr=self.lr_g)
-        self.softplus_sp = nn.Softplus(beta=self.beta_sp)
+        
+        # ▼▼ 추가: split별 group_id 캐시
+        self.group_ids_byN = {self.N: self.group_id}
+        for key in ("S_val", "S_test"):
+            if key in data and data[key] is not None:
+                Sx = data[key]
+                Sx = Sx.values if hasattr(Sx, "values") else np.asarray(Sx)
+                Sx = torch.tensor(Sx, dtype=torch.float32, device=device)
+                Sx = (Sx > 0.5).to(torch.long)
+                if Sx.shape[1] == self.q:               # 열 개수 일치할 때만
+                    gid = (Sx * self.w).sum(dim=1)      # (Nx,)
+                    self.group_ids_byN[int(Sx.shape[0])] = gid
 
-    # 내부 유틸: g(S) in [0,1]
-    def _gprob(self, S):
-        z = self.g(S).squeeze(-1)
-        return torch.sigmoid(self.temp_g * z).clamp(0.0, 1.0)
-
-    # 내부 유틸: α, SP, SP_g, α|SP_g - SP|
-    @staticmethod
-    def _fair_terms(p, gprob, eps=1e-8):
-        alpha   = gprob.mean()
-        sp_base = p.mean()
-        denom   = gprob.sum().clamp_min(eps)
-        sp_grp  = (p * gprob).sum() / denom
-        wdisp   = alpha * torch.abs(sp_grp - sp_base)
-        return alpha, sp_base, sp_grp, wdisp
+    def _aggregate(self, delta):
+        if self.agg == "max":
+            return delta.max()
+        if self.agg == "softmax":
+            w = torch.softmax(delta / self.tau, dim=0)
+            return (w * delta).sum()
+        # default: log-sum-exp (stable softmax max)
+        return self.tau * torch.logsumexp(delta / self.tau, dim=0)
 
     def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
-        """
-        f 업데이트에 들어갈 스칼라 패널티(softplus/β 포함)를 반환.
-        - g는 고정(미분 안 보냄)으로 취급하기 위해 gprob는 detach() 하지 않지만,
-          after_f_step에서 g를 따로 최적화하므로 여기선 g에 gradient가 필요 없음.
-        """
-        if self.d_s == 0:
-            return torch.zeros((), device=logits.device)
+        # probs = sigmoid(logits) 가 이미 넘어온다고 가정 (혹은 여기서 torch.sigmoid(logits))
+        p = probs  # (N,)
+        N = int(p.numel())
+        # ▼ 추가: 현재 N에 맞는 group_id 고르기
+        gid = self.group_ids_byN.get(N, None)
+        if gid is None:
+            # (희귀) 대응하는 S가 없으면 보수적으로 0 반환(혹은 필요시 에러)
+            return torch.zeros((), device=probs.device, dtype=probs.dtype)
+        base = p.mean()
 
-        with torch.no_grad():
-            gprob = self._gprob(self.S_tr)                 # (N,)
-        _, _, _, wdisp = self._fair_terms(probs, gprob)    # (스칼라)
-        pen = self.softplus_sp(wdisp) / self.beta_sp
-        return pen
+        # 그룹별 합/카운트 (미분 가능한 index_add_)
+        sum_p = torch.zeros(self.M, device=self.device, dtype=p.dtype)
+        cnt   = torch.zeros(self.M, device=self.device, dtype=p.dtype)
+        sum_p.index_add_(0, gid, p)
+        cnt.index_add_(0, gid, torch.ones_like(p))
 
-    def after_f_step(self, f, X_tr: torch.Tensor) -> None:
-        """
-        f 한 스텝 후, g를 (penalty - size barrier) 최대화하도록 1~여러 스텝 업데이트.
-        """
-        if self.d_s == 0:
-            return
+        # 평균, 격차
+        mean_g = sum_p / cnt.clamp_min(1.0)
+        delta  = (mean_g - base).abs()
 
-        # p는 고정, g만 미분
-        with torch.no_grad():
-            logits_det = f(X_tr).detach()
-            p_det = torch.sigmoid(logits_det).clamp(0.0, 1.0)
+        # 너무 작은 그룹 제거
+        if self.min_prop > 0.0:
+            mask = (cnt >= self.min_prop * self.N).to(delta.dtype)
+            delta = delta * mask  # 또는 delta[mask==0] = 0
 
-        # g 업데이트
-        self.opt_g.zero_grad()
-        gprob = self._gprob(self.S_tr)                     # grad to g
-        alpha, _, _, wdisp_g = self._fair_terms(p_det, gprob)
-        pen_g   = self.softplus_sp(wdisp_g) / self.beta_sp
-        # 그룹 크기 장벽(min_prop 이하/이상 방지)
-        barrier = nn.Softplus(beta=self.beta_sp)(self.min_prop - alpha) \
-                + nn.Softplus(beta=self.beta_sp)(self.min_prop - (1.0 - alpha))
-        # g는 (pen_g - barrier) 최대화 ⇒ 음수 부호로 최소화
-        loss_g = -(pen_g - barrier)
-        loss_g.backward()
-        self.opt_g.step()
+        # α_g 가중 (선택)
+        if self.use_alpha:
+            alpha = cnt / max(1.0, float(self.N))
+            delta = alpha * delta
 
+        return self._aggregate(delta)
 
+    def after_f_step(self, f, X_tr):  # 적대자 없음
+        return
+
+# class SPFairAll(BaseFair):
+#     """
+#     penalty = softmax-approx(max_g |E[p] - E[p|g]|) over all 2^q subgroups
+#     - adversary 없음
+#     - O(N + 2^q) 시간/메모리
+#     """
+#     def __init__(self, args, data, device):
+#         self.device = device
+#         S = data["S_train"]
+#         S = S.values if hasattr(S, "values") else np.asarray(S)
+#         S = torch.tensor(S, dtype=torch.float32, device=device)
+#         # 보장: 0/1 이진
+#         S = (S > 0.5).to(torch.long)
+
+#         self.N, self.q = S.shape
+#         self.M = 1 << self.q
+#         # 비트 가중치 (1,2,4,...)
+#         w = (2 ** torch.arange(self.q, device=device, dtype=torch.long)).view(1, -1)
+#         self.group_id = (S * w).sum(dim=1)  # (N,) in [0, 2^q)
+
+#         # 하이퍼
+#         self.tau = 0.01  # LSE/softmax 온도(작을수록 max 근사)
+#         self.min_prop = 0.0  # 너무 작은 그룹 무시(비율)
+#         self.agg = "softmax"  # "softmax" | "max"
+#         self.use_alpha = True  # α_g 가중 사용 여부
+
+#     def _aggregate(self, delta):
+#         if self.agg == "max":
+#             return delta.max()
+#         if self.agg == "softmax":
+#             w = torch.softmax(delta / self.tau, dim=0)
+#             return (w * delta).sum()
+#         # default: log-sum-exp (stable softmax max)
+#         return self.tau * torch.logsumexp(delta / self.tau, dim=0)
+
+#     def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+#         # probs = sigmoid(logits) 가 이미 넘어온다고 가정 (혹은 여기서 torch.sigmoid(logits))
+#         p = probs  # (N,)
+#         base = p.mean()
+
+#         # 그룹별 합/카운트 (미분 가능한 index_add_)
+#         sum_p = torch.zeros(self.M, device=self.device, dtype=p.dtype)
+#         cnt   = torch.zeros(self.M, device=self.device, dtype=p.dtype)
+#         sum_p.index_add_(0, self.group_id, p)
+#         cnt.index_add_(0, self.group_id, torch.ones_like(p))
+
+#         # 평균, 격차
+#         mean_g = sum_p / cnt.clamp_min(1.0)
+#         delta  = (mean_g - base).abs()
+
+#         # 너무 작은 그룹 제거
+#         if self.min_prop > 0.0:
+#             mask = (cnt >= self.min_prop * self.N).to(delta.dtype)
+#             delta = delta * mask  # 또는 delta[mask==0] = 0
+
+#         # α_g 가중 (선택)
+#         if self.use_alpha:
+#             alpha = cnt / max(1.0, float(self.N))
+#             delta = alpha * delta
+
+#         return self._aggregate(delta)
+
+#     def after_f_step(self, f, X_tr):  # 적대자 없음
+#         return
 
 def get_fair_loss(args, data, fair_weight, device) -> BaseFair:
     
@@ -382,10 +535,10 @@ def get_fair_loss(args, data, fair_weight, device) -> BaseFair:
         return DRFair(args, data, device)
     if key.startswith("gerry") or key.startswith("sp"):
         print("fair loss: gerry fair")
-        return SPFair(args, data, device)   # ★ 추가
+        # return SPFair(args, data, device)   # ★ 추가
+        return SPFairAll(args, data, device)   # ★ 추가
     if key.startswith("reg") or key.startswith("marginal"):
         print("fair loss: marginal fair")
         return RegFair(args, data, device)
 
     return NoneFair()
-

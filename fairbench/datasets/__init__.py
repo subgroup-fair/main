@@ -1,9 +1,10 @@
 # fairbench/datasets/__init__.py
 from .toy_manyq import load_toy_manyq
-from .adult import load_adult
+from .adult import load_adult, load_sparse_adult
 from .communities import load_communities
 from .dutch import load_dutch
 from .celebA import load_celebA
+from .civil_comments import load_civilcomments
 
 def _print_sensitive_stats(data):
     """
@@ -196,16 +197,20 @@ def _print_sensitive_stats(data):
 
 def load_dataset(args):
     name = args.dataset.lower()
-    if name == "toy_manyq":
-        data = load_toy_manyq(args)
-    elif name == "adult":
+    # if name == "toy_manyq":
+    #     data = load_toy_manyq(args)
+    if name == "adult":
         data = load_adult(args)
+    elif name == "sparse_adult":
+        data = load_sparse_adult(args)
     elif name == "communities":
         data = load_communities(args)
     elif name == "dutch":
         data = load_dutch(args)
     elif name == "celeba":
         data = load_celebA(args)
+    elif name == "civilcomments":
+        data = load_civilcomments(args)
     else:
         raise ValueError(name)
 

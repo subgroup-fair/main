@@ -17,6 +17,47 @@ torch.manual_seed(0)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(0)
 
+# ===== NEW: Apriori-forward (1차→2차→... 교차집단) =====
+def _apriori_forward_unions_from_df(S_df, T, max_order=3, max_cols=None, log_prefix="af"):
+
+    print(f"[Apriori-forward] Max order: {max_order}")
+    """
+    S_df의 이진 컬럼들을 1차(단일 컬럼) → 2차(AND) → 3차(AND) ... 순서로
+    교차집단 마스크를 만들고, 지지도/여지도(T) 조건을 만족하는 것만 반환.
+    - T: subset size >= T 그리고 complement >= T
+    - max_order: 몇 차까지(없으면 q 전체)
+    - max_cols: 최대 개수 제한
+    return: List[np.ndarray(bool)]  (각 교차집단 마스크)
+    """
+    import numpy as np
+    from itertools import combinations
+
+    N, q = len(S_df), S_df.shape[1]
+    if N == 0 or q == 0 or T <= 0:
+        print(f"[{log_prefix}] skip: N={N}, q={q}, T={T}")
+        return []
+
+    X = S_df.values.astype(np.int32)  # (N, q) in {0,1}
+    q_max = q if (max_order is None or max_order <= 0) else min(int(max_order), q)
+
+    out = []
+    kept = 0
+    for k in range(1, q_max + 1):                       # 1차 → 2차 → ...
+        print(f"[Apriori-forward] Order: {k}")
+        for comb in combinations(range(q), k):
+            m = X[:, comb].all(axis=1)                  # 교차집단: AND
+            cnt = int(m.sum()); comp = N - cnt
+            if cnt >= T and comp >= T:
+                out.append(m)
+                kept += 1
+                if (max_cols is not None) and (kept >= int(max_cols)):
+                    print(f"[{log_prefix}] reached max_cols={max_cols}; stop early")
+                    return out
+        print(f"[{log_prefix}] order={k} done (kept so far={kept})")
+
+    print(f"[{log_prefix}] done. total kept={kept}")
+    return out
+
 # ===== NEW: Random packing unions over disjoint base subgroups =====
 def _random_pack_unions(counts, T, M=64, seed=None, max_len=None, max_cols=None):
     """
@@ -89,8 +130,48 @@ def _random_pack_unions(counts, T, M=64, seed=None, max_len=None, max_cols=None)
     return out
 
 
+### 모든 경우의 수 다 고려하는 거
+# ===== NEW: Enumerate ALL subgroup-subsets (unions) over observed disjoint cells =====
+def _enumerate_all_unions(counts, T, max_len=None, max_cols=None):
+    """
+    모든 셀 조합을 열거해(1..K 또는 max_len까지) 지지도/여지 조건을 만족하는
+    합집합만 반환한다.
+      - counts: 각 관측 셀의 크기 리스트 (길이 K)
+      - T: 최소 지지도(합집합 size >= T) & complement >= T 조건
+      - max_len: 합집합에 포함될 셀 수의 상한(없으면 K)
+      - max_cols: 반환할 최대 개수(없으면 전부)
+    반환: List[Tuple[int,...]]  (셀 인덱스 조합을 정렬된 튜플로)
+    주의: 조합 수가 2^K - 1로 폭증하므로 K가 크면 비용이 큼.
+    """
+    import numpy as np
+    from itertools import combinations
 
-def _bitpack_cells_from_df(S_df, device="cpu"):
+    N = int(np.sum(counts))
+    K = len(counts)
+    if K == 0 or T <= 0:
+        print(f"[enum] skip: K={K}, T={T}")
+        return []
+
+    Lmax = K if (max_len is None) else int(max_len)
+    Lmax = max(1, min(Lmax, K))
+
+    out = []
+    # 길이 1 -> Lmax까지 순서대로(짧은 길이 우선) 순회
+    for L in range(1, Lmax + 1):
+        for comb in combinations(range(K), L):
+            union_size = int(sum(int(counts[i]) for i in comb))
+            comp = N - union_size
+            if union_size >= T and comp >= T:
+                out.append(tuple(comb))
+                if (max_cols is not None) and (len(out) >= int(max_cols)):
+                    print(f"[enum] reached max_cols={max_cols}; stop early")
+                    return out
+    print(f"[enum] done: unique_unions={len(out)} (K={K}, Lmax={Lmax})")
+    return out
+
+
+
+def _bitpack_cells_from_df(S_df, device="cuda"):
     """
     S_df: (N x q) 이진 DataFrame
     return: 
@@ -98,6 +179,7 @@ def _bitpack_cells_from_df(S_df, device="cpu"):
       - counts: list[int]             # 각 셀의 크기
       - order: list[int]              # 셀 인덱스(비트패턴)를 오름차순으로
     """
+    # import pdb;pdb.set_trace()
     import numpy as np, torch
     cols = list(S_df.columns)
     if len(cols) == 0 or len(S_df) == 0:
@@ -147,10 +229,12 @@ def _log_unions_tabular(unions, counts, order_codes, cols, N, max_show=10, tag="
         print(f"[{tag}] ... {K-show} more")
 
 # (서명 변경) agg_repeat 추가  ▼▼▼
-def build_C_from_unions_df(S_df, device="cpu",
+def build_C_from_unions_df(S_df, device="cuda",
                             n_low=None, n_low_frac=None,
                             agg_max_len=300, agg_max_cols=2048,
-                            agg_repeat=64):  # NEW
+                            agg_repeat=64,
+                            unions_mode="pack",
+                            include_marginals_always=False):  # NEW
     """
     디스조인트 셀(관측된 것들) 위에서 Apriori로 '최소 합집합'을 만들고, 
     각 합집합(Union)의 마스크 컬럼을 C에 쌓아 반환.
@@ -159,25 +243,77 @@ def build_C_from_unions_df(S_df, device="cpu",
     """
     import torch, numpy as np
     
+
+    # 개수 세기
     N = len(S_df)
-    
     if N == 0 or S_df.shape[1] == 0:
         return torch.zeros((N, 0), device=device)
     if (n_low_frac is not None) and (n_low_frac > 0):
         T = int(np.ceil(float(n_low_frac) * N))
     else:
         T = int(n_low or 0)
+    
+    print(f"[tabular] n low frac: {n_low_frac}, n low: {n_low} T: {T}")
+    
+    # 민감속성중 개수 안되는거 탈락
     base_masks, counts, order = _bitpack_cells_from_df(S_df, device=device)
     alive = sum(c >= T for c in counts)
+    print(f"탈락 수: {sum(c < T for c in counts)}/{len(counts)}, T = {T}")
     print(f"[tabular] 원자 셀 단계에서 살아남은 개수 = {alive}")
     if len(base_masks) == 0:
         return torch.zeros((N, 0), device=device)
 
-    # (호출 교체) Apriori → Random packing  ▼▼▼
-    # unions = _apriori_min_cover(counts, T, max_len=agg_max_len)
-    unions = _random_pack_unions(
-        counts, T, M=int(agg_repeat), max_len=agg_max_len, max_cols=agg_max_cols
-    )
+    # union 
+    if unions_mode == "all":
+        unions = _enumerate_all_unions(
+            counts, T, max_len=agg_max_len, max_cols=agg_max_cols
+        )
+        
+    elif unions_mode == "apriori_forward":
+        af_max_order = 3
+        # 교차집단 마스크 직접 생성 (단일→2차→... AND)
+
+        
+        # ✅ base_masks / counts에서 T 이상인 '살아남은 원자'만 추려서 Apriori에 투입
+        alive_idx = [i for i, c in enumerate(counts) if c >= T]
+        if len(alive_idx) == 0:
+            return torch.zeros((N, 0), device=device)
+
+        # base_masks: (N, K) torch → numpy (N, K_alive)
+        if isinstance(base_masks, torch.Tensor):
+            base_np = (base_masks[:, alive_idx] > 0.5).float().detach().cpu().numpy()
+        else:
+            # 리스트/배열로 올 경우도 대응
+            base_np = np.stack([np.asarray(base_masks[i]).astype(np.float32).ravel()
+                                for i in alive_idx], axis=1)
+
+        masks_np = _apriori_forward_unions_from_df(
+            S_df, T, max_order=af_max_order, max_cols=agg_max_cols, log_prefix="af"
+        )
+        if len(masks_np) == 0:
+            return torch.zeros((N, 0), device=device)
+
+        cols = []
+        for m_np in masks_np:
+            v = torch.tensor(m_np.astype(np.float32), device=device).view(-1, 1)
+            pos = int(v.sum().item()); neg = N - pos
+            if pos >= T and neg >= T:
+                cols.append(v)
+            if len(cols) >= int(agg_max_cols):
+                break
+
+        if len(cols) == 0:
+            return torch.zeros((N, 0), device=device)
+
+        print(f"[apriori_forward] N={N}, q={S_df.shape[1]}, T={T}, max_order={af_max_order}, "
+            f"max_cols={agg_max_cols}, kept={len(cols)}")
+        return torch.cat(cols, dim=1)
+    
+    else:  # default: random packing
+        unions = _random_pack_unions(
+            counts, T, M=int(agg_repeat), max_len=agg_max_len, max_cols=agg_max_cols
+        )
+
     cols_list = list(S_df.columns)
     _log_unions_tabular(unions, counts, order, cols_list, N, max_show=10, tag="pack->C")  # NEW
 
@@ -195,14 +331,31 @@ def build_C_from_unions_df(S_df, device="cpu",
             cols.append(umask.float().view(-1, 1))
         if len(cols) >= int(agg_max_cols):
             break
-    if len(cols) == 0:
+    
+    # === NEW: 항상 마진널 그룹(S_j==1)도 포함 ===
+    marg_cols = []
+    for c in S_df.columns:
+        v = torch.tensor(S_df[c].values.astype(np.int32),
+                         dtype=torch.float32, device=device).view(-1, 1)
+        pos = int(v.sum().item()); neg = N - pos
+        if pos >= T and neg >= T:     # 기존 T/complement 조건 유지
+            marg_cols.append(v)
+
+    # <<< 여기서 선택적으로 포함
+    if include_marginals_always and len(marg_cols) > 0:
+        all_cols = marg_cols + cols
+    else:
+        all_cols = cols
+
+    if len(all_cols) == 0:
         return torch.zeros((N, 0), device=device)
     
-    print(f"[tabular] N={N}, q={S_df.shape[1]}, T={T}, agg_repeat={agg_repeat}, max_len={agg_max_len}, max_cols={agg_max_cols}")
+    print(f"[tabular] N={N}, q={S_df.shape[1]}, T={T}, agg_repeat={agg_repeat}, "
+          f"max_len={agg_max_len}, max_cols={agg_max_cols}")
     print(f"[tabular] 관측 셀 K={len(counts)}, alive(>=T)={alive}, dead(<T)={len(counts)-alive}")
-    return torch.cat(cols, dim=1)
+    return torch.cat(all_cols, dim=1)
 
-log = logging.getLogger("fair")
+# log = logging.getLogger("fair")
 
 
 
@@ -235,7 +388,8 @@ def build_C_tensor(S_df, args, device="cuda", n_low=None, n_low_frac=None,
         return build_C_from_unions_df(
             S_df, device=device, n_low=n_low, n_low_frac=n_low_frac,
             agg_max_len=agg_max_len, agg_max_cols=agg_max_cols,
-            agg_repeat=int(getattr(args, "agg_repeat", 64))  # NEW
+            agg_repeat=int(getattr(args, "agg_repeat", 64)),
+            unions_mode=str(getattr(args, "union_mode", "pack"))  # NEW
         )
     if (n_low_frac is not None) and (n_low_frac > 0):
         min_support = int(np.ceil(float(n_low_frac) * N))
@@ -400,6 +554,7 @@ def _train_image(args, data, device):
         for uidx in range(len(uniq)):
             m = torch.from_numpy((inv == uidx)).to(device)
             masks.append(m); counts.append(int(m.sum().item()))
+        # import pdb; pdb.set_trace()
         alive = sum(c >= T for c in counts)
         print("원자 셀 단계에서 살아남은 개수 =", alive)
         # Apriori unions

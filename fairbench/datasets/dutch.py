@@ -169,7 +169,7 @@ def load_dutch(args):
 
     # 범주 원핫
     if len(cat_cols) > 0:
-        enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+        enc = OneHotEncoder(sparse=False, handle_unknown="ignore")
         X_cat_arr = enc.fit_transform(X_for_fe[cat_cols].astype(str))
         X_cat = pd.DataFrame(X_cat_arr, columns=enc.get_feature_names_out(cat_cols))
         Xp = pd.concat([X_num.reset_index(drop=True), X_cat.reset_index(drop=True)], axis=1)

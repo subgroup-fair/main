@@ -153,10 +153,9 @@ build_dr_subgroup_subset_3q_cmds() {
         for seed in "${SEED_ARR[@]}"; do
           for agg_repeat in "${AGG_REPEATS[@]}"; do
             enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method dr_subgroup_subset_random \
-              --lambda_fair $lam --n_low_frac $nlow_frac --agg_repeat $agg_repeat \
-              --x_sensitive $X_SENSITIVE --seed $seed --fair_warmup_epochs 100 \
-              --fair_conf_gamma 1.5 --fair_margin 0.01 --fair_adv_steps 1 --dr_temp_gz 0.7 --agg_max_len 100 \
-              --save_dir \"../1009_mlp_$SAVE_DIR/$nlow_frac/dr_$ds\""
+              --lambda_fair $lam --n_low_frac $nlow_frac --agg_repeat $agg_repeat --base_model linear \
+              --x_sensitive $X_SENSITIVE --seed $seed --fair_adv_steps 1 --dr_temp_gz 0.7 --agg_max_len 100 \
+              --save_dir \"../1009_linear_$SAVE_DIR/$nlow_frac/dr_$ds\""
           done
         done
       done
@@ -173,7 +172,7 @@ build_reduction_cmds() {
         enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method reduction \
           --red_constraint $RED_CONSTRAINT --red_max_iter $RED_MAX_ITER --red_eps $r \
           --x_sensitive $X_SENSITIVE --seed $seed \
-          --save_dir \"../1009_mlp_$SAVE_DIR/reduction_$ds\""
+          --save_dir \"../1009_linear_$SAVE_DIR/reduction_$ds\""
       done
     done
   done
@@ -188,9 +187,8 @@ build_gerryfair_cmds() {
       for seed in "${SEED_ARR[@]}"; do
         enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method gerryfair \
           --gf_C $c --gf_max_iters $GF_MAX_ITERS --gf_fairness $GF_FAIRNESS \
-          --x_sensitive concat --seed $seed --fair_warmup_epochs 100 \
-          --fair_conf_gamma 1.5 --fair_margin 0.01 --fair_adv_steps 1 --dr_temp_gz 0.7 --agg_max_len 100 \
-          --save_dir \"../1009_mlp_$SAVE_DIR/gerryfair_$ds\""
+          --x_sensitive concat --seed $seed --base_model linear \
+          --save_dir \"../1009_linear_$SAVE_DIR/gerryfair_$ds\""
       done
     done
   done
@@ -206,7 +204,7 @@ build_multicalib_cmds() {
           enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method multicalib \
             --mc_alpha $a --mc_lambda $l --mc_max_iter $MC_MAX_ITER \
             --x_sensitive $X_SENSITIVE --seed $seed \
-            --save_dir \"../1009_mlp_$SAVE_DIR/mc_$ds\""
+            --save_dir \"../1009_linear_$SAVE_DIR/mc_$ds\""
         done
       done
     done
@@ -227,7 +225,7 @@ build_sequential_cmds() {
             --seq_alpha $a $sched_flags \
             --x_sensitive $X_SENSITIVE --seed $seed \
             --tfds_data_dir data/tfds \
-            --save_dir \"../1009_mlp_$SAVE_DIR/sequential_$ds\""
+            --save_dir \"../1009_linear_$SAVE_DIR/sequential_$ds\""
         done
     done
   done
@@ -243,7 +241,7 @@ build_unfair_cmds() {
       enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method unfair \
         --red_base $base \
         --x_sensitive $X_SENSITIVE --seed $seed \
-        --save_dir \"../1009_mlp_$SAVE_DIR/unfair_$ds\""
+        --save_dir \"../1009_linear_$SAVE_DIR/unfair_$ds\""
     done
   done
 }
@@ -255,10 +253,9 @@ build_reg_cmds() {
     for lam in "${REG_LAMS[@]}"; do
       for seed in "${SEED_ARR[@]}"; do
         enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method reg \
-          --mf_lambda $lam --mf_base mlp --fair_warmup_epochs 100 \
-          --fair_conf_gamma 1.5 --fair_margin 0.01 --fair_adv_steps 1 --dr_temp_gz 0.7 --agg_max_len 100 \
-          --x_sensitive $X_SENSITIVE --seed $seed \
-          --save_dir \"../1009_mlp_$SAVE_DIR/reg_$ds\""
+          --mf_lambda $lam --mf_base mlp \
+          --x_sensitive $X_SENSITIVE --seed $seed --base_model linear \
+          --save_dir \"../1009_linear_$SAVE_DIR/reg_$ds\""
       done
     done
   done
