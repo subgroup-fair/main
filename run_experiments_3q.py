@@ -15,7 +15,7 @@ import logging, sys, os
 from pathlib import Path
 def setup_logging(save_dir, method, dataset, seed):
     Path(save_dir).mkdir(parents=True, exist_ok=True)
-    log_dir = Path(save_dir) / "logs"
+    log_dir = Path(save_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{method}_{dataset}.log"
 
@@ -50,7 +50,7 @@ def parse_args():
 
     # Dataset & data options
     p.add_argument("--dataset", type=str, required=True,
-                   choices=["adult", "sparse_adult", "communities", "dutch", "civilcomments"])
+                   choices=["adult", "sparse_adult", "communities", "dutch", "civilcomments", "civilcomments2"])
                 #    choices=["toy_manyq", "adult", "communities", "dutch", "celebA"])
     p.add_argument("--data_dir", type=str, default="../data/raw/")
     p.add_argument("--q", type=int, default=100, help="toy_manyq sensitive count")
@@ -192,6 +192,7 @@ def parse_args():
                    choices=["pack", "all", "apriori", "apriori_forward"])
     
     p.add_argument("--sparse_n_groups", type=int, default=5)
+    p.add_argument("--af_max_order", type=int, default=3)
 
 
     return p.parse_args()

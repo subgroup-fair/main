@@ -19,7 +19,7 @@ SAVE_DIR="${SAVE_DIR:-results}"
 X_SENSITIVE="${X_SENSITIVE:-concat}"
 
 # 반복할 시드들
-SEEDS="${SEEDS:-1 11 21 31 41}"
+SEEDS="${SEEDS:-1 11}"
 read -r -a SEED_ARR <<< "$SEEDS"
 
 ############################################
@@ -71,6 +71,10 @@ ds_args() {
       echo "--dataset civilcomments \
             --data_dir  /data/share/toxic/"
       ;;
+    civilcomments2)
+      echo "--dataset civilcomments2 \
+            --data_dir  /data/share/toxic/"
+      ;;
     # toy_manyq)  
     #   echo "--dataset toy_manyq --n 2000 --d 10 --q 4"
     #   ;;
@@ -85,9 +89,18 @@ ds_args() {
 
 # ===== 스윕 그리드 =====
 # DR
-DR_LAMS=(0.00 0.01 0.02 0.05 0.10 0.20 0.30 0.50 0.70 1.00 1.20 1.50 2.00 5.00 10.00 20.0 50.0 100.0 200.0 500.0 1000.0 2000.0 5000.0 10000.0)
+DR_LAMS=(0.00 0.02 0.05 0.10 0.20 0.50 1.00 2.00 5.00 10.00 20.0 50.0 100.0 200.0 500.0 1000.0 5000.0 10000.0)
+# DR_LAMS=(0 1.0 10.0 100.0 10000.0)
+# DR_LAMS=(0.048 0.046 0.044 0.042 0.04 0.038 0.036 0.034 0.032)
+# DR_LAMS=(0 0.001 0.003 0.005 0.007 0.01 0.03 0.05 0.07 0.1 0.3 0.5 0.7 3.0 5.0)
+
 # DR_LAMS=(5.00)
-DR_NLOWS_FRAC=(0.05 0.07 0.1 0.15 0.2 0.25 0.3 0.35 0.4 0.45)
+# DR_NLOWS_FRAC=(0.2 0.25 0.3 0.35 0.4) 
+# DR_NLOWS_FRAC=(0.0001 0.0005 0.3) # communities & civil
+DR_NLOWS_FRAC=(0.0001 0.001 0.01 0.05 0.1 0.15 0.2 0.3) # adult
+# DR_NLOWS_FRAC=(0.0005 0.005 0.05 0.4) # adult
+
+
 DR_NLOWS_CSV="${DR_NLOWS_CSV:-0}"
 IFS=' ' read -r -a DR_NLOWS <<< "$DR_NLOWS_CSV"
 
@@ -99,7 +112,7 @@ RED_MAX_ITER="${RED_MAX_ITER:-30}"
 # GerryFair
 # GF_GAMMAS=(0.00001 0.00005 0.0001 0.0002 0.0005 0.001 0.005 0.01 0.02 0.05 0.10 0.20 0.30 0.50 0.70 1.00 1.20 1.50 2.00 5.00)
 # GF_GAMMAS=(1.0)
-GF_CS=(0.0 0.1 0.5 1.0 5.0 20.0 50.0 200.0 500.0 1000.0 5000.0)
+GF_CS=(0.0 0.1 0.5 1.0 5.0 20.0 50.0 200.0 500.0 1000.0 2000.0 5000.0 10000.0 20000.0 50000.0)
 # GF_CS=(0.0)
 GF_MAX_ITERS="${GF_MAX_ITERS:-200}"
 GF_FAIRNESS="${GF_FAIRNESS:-SP}"
@@ -116,7 +129,7 @@ SEQ_WARMUP="${SEQ_WARMUP:-}"   # 에폭 단위 (비우면 전달 안함)
 
 # Reg
 # Sequential
-REG_LAMS=(10.0 5.0 2.0 1.0 0.7 0.5 0.3 0.2 0.1 0.05 0.01 0.005 0.002 0.001 0.0)
+REG_LAMS=(100.0 50.0 20.0 10.0 5.0 2.0 1.0 0.7 0.5 0.3 0.2 0.1 0.05 0.01 0.005 0.002 0.001 0.0)
 # REG_LAMS=(0.0)
 # REG_LAMS=(0.005 0.002 0.001 0.0)
 
@@ -154,15 +167,15 @@ enqueue() { CMDS+=("$*"); }
 
 build_dr_subgroup_subset_3q_cmds() {
   local ds extra seed lam nlow nlow_frac
-  for ds in civilcomments; do
+  for ds in adult sparse_adult dutch communities civilcomments civilcomments2; do
     extra=$(ds_args "$ds")
-      for lam in "${DR_LAMS[@]}"; do
-        for nlow_frac in "${DR_NLOWS_FRAC[@]}"; do
+      for nlow_frac in "${DR_NLOWS_FRAC[@]}"; do
+        for lam in "${DR_LAMS[@]}"; do
           for seed in "${SEED_ARR[@]}"; do
           enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method dr_subgroup_subset_random \
             --lambda_fair $lam --union_mode apriori_forward --sparse_n_groups 5 --n_low_frac $nlow_frac \
-            --x_sensitive $X_SENSITIVE --seed $seed --fair_conf_gamma 1.2 --fair_margin 0.02 --agg_max_cols 5000 \
-            --save_dir \"../test_main4_1_$SAVE_DIR/$nlow_frac/dr_$ds\""
+            --x_sensitive $X_SENSITIVE --seed $seed --fair_conf_gamma 1.2 --fair_margin 0.02 --agg_max_cols 5000 --af_max_order 3 \
+            --save_dir \"../0918final2_$SAVE_DIR/$nlow_frac/dr_$ds\""
         done
       done
     done
@@ -171,30 +184,30 @@ build_dr_subgroup_subset_3q_cmds() {
 
 build_reduction_cmds() {
   local ds extra seed r
-  for ds in civilcomments; do
+  for ds in adult sparse_adult dutch communities civilcomments; do
     extra=$(ds_args "$ds")
       for r in "${RED_GAMMAS[@]}"; do
         for seed in "${SEED_ARR[@]}"; do
         enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method reduction \
           --red_constraint $RED_CONSTRAINT --red_max_iter $RED_MAX_ITER --red_eps $r \
           --x_sensitive $X_SENSITIVE --seed $seed --sparse_n_groups 5 \
-          --save_dir \"../test_main4_$SAVE_DIR/reduction_$ds\""
+          --save_dir \"../0916val_4_$SAVE_DIR/reduction_$ds\""
       done
     done
   done
 }
 
-
+#########
 build_gerryfair_cmds() {
   local ds extra seed g
-  for ds in civilcomments; do
+  for ds in adult sparse_adult dutch communities civilcomments civilcomments2; do
     extra=$(ds_args "$ds")
       for c in "${GF_CS[@]}"; do
         for seed in "${SEED_ARR[@]}"; do
         enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method gerryfair \
           --gf_C $c --gf_max_iters $GF_MAX_ITERS --gf_fairness $GF_FAIRNESS \
           --x_sensitive concat --seed $seed --sparse_n_groups 5 \
-          --save_dir \"../test_main4_1_$SAVE_DIR/gerryfair_$ds\""
+          --save_dir \"../0918final2_$SAVE_DIR/gerryfair_$ds\""
       done
     done
   done
@@ -202,7 +215,7 @@ build_gerryfair_cmds() {
 
 build_multicalib_cmds() {
   local ds extra seed a l
-  for ds in civilcomments; do
+  for ds in adult sparse_adult dutch communities civilcomments; do
     extra=$(ds_args "$ds")
       for a in "${MC_ALPHAS[@]}"; do
         for l in "${MC_LAMBDAS[@]}"; do
@@ -210,16 +223,16 @@ build_multicalib_cmds() {
           enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method multicalib \
             --mc_alpha $a --mc_lambda $l --mc_max_iter $MC_MAX_ITER \
             --x_sensitive $X_SENSITIVE --seed $seed --sparse_n_groups 5 \
-            --save_dir \"../test_main4_$SAVE_DIR/mc_$ds\""
+            --save_dir \"../0916val_4_$SAVE_DIR/mc_$ds\""
         done
       done
     done
   done
 }
-
+###########
 build_sequential_cmds() {
   local extra seed a sched_flags=""
-  for ds in civilcomments; do
+  for ds in adult sparse_adult dutch communities civilcomments civilcomments2; do
     extra=$(ds_args "$ds")
       #   extra=$(ds_args "celebA")   # ★ CelebA만
       #   # 선택적 스케줄 플래그
@@ -231,7 +244,7 @@ build_sequential_cmds() {
             --seq_alpha $a $sched_flags \
             --x_sensitive $X_SENSITIVE --seed $seed --sparse_n_groups 5 \
             --tfds_data_dir data/tfds \
-            --save_dir \"../test_main4_$SAVE_DIR/sequential_$ds\""
+            --save_dir \"../0918final2_$SAVE_DIR/sequential_$ds\""
         done
     done
   done
@@ -241,29 +254,29 @@ build_unfair_cmds() {
   local ds extra seed
   # 선택 옵션(없으면 기본값)
   local base="${BASE:-mlp_clf}"   # logreg | linear_svm | rf | mlp_clf | mlp_reg
-  for ds in civilcomments; do
+  for ds in adult sparse_adult dutch communities civilcomments; do
     extra=$(ds_args "$ds")
     for seed in "${SEED_ARR[@]}"; do
       for sparse_group in "${N_SPARSE_GROUP[@]}"; do
         enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method unfair \
           --red_base $base \
           --x_sensitive $X_SENSITIVE --seed $seed --sparse_n_groups 5 \
-          --save_dir \"../test_main4_$SAVE_DIR/unfair_$ds\""
+          --save_dir \"../0916val_4_$SAVE_DIR/unfair_$ds\""
       done
     done
   done
 }
-
+########
 build_reg_cmds() {
   local ds extra seed lam
-  for ds in civilcomments; do
+  for ds in adult sparse_adult dutch communities civilcomments civilcomments2; do
     extra=$(ds_args "$ds")
       for lam in "${REG_LAMS[@]}"; do
         for seed in "${SEED_ARR[@]}"; do
         enqueue "$(gpu_prefix) $PY run_experiments_3q.py $extra --method reg \
           --mf_lambda $lam --mf_base mlp \
           --x_sensitive $X_SENSITIVE --seed $seed --sparse_n_groups 5 \
-          --save_dir \"../test_main4_$SAVE_DIR/reg_$ds\""
+          --save_dir \"../0918final2_$SAVE_DIR/reg_$ds\""
       done
     done
   done
@@ -297,5 +310,4 @@ if command -v parallel >/dev/null 2>&1; then
 elif command -v xargs >/dev/null 2>&1; then
   printf '%s\0' "${CMDS[@]}" | xargs -0 -I {} -P "$JOBS" bash -lc "{}"
 fi
-
 echo "[DONE] $METHOD sweeps finished."

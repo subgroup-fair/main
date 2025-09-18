@@ -4,7 +4,7 @@ from .adult import load_adult, load_sparse_adult
 from .communities import load_communities
 from .dutch import load_dutch
 from .celebA import load_celebA
-from .civil_comments import load_civilcomments
+from .civil_comments import load_civilcomments, load_civilcomments2
 
 def _print_sensitive_stats(data):
     """
@@ -211,6 +211,8 @@ def load_dataset(args):
         data = load_celebA(args)
     elif name == "civilcomments":
         data = load_civilcomments(args)
+    elif name == "civilcomments2":
+        data = load_civilcomments2(args)
     else:
         raise ValueError(name)
 

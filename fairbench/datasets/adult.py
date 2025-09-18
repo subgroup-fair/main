@@ -318,7 +318,7 @@ def load_adult(args):
     cat = X_for_fe.select_dtypes(include=["object"]).columns.tolist()
     num = X_for_fe.select_dtypes(exclude=["object"]).columns.tolist()
 
-    enc = OneHotEncoder(sparse=False, handle_unknown="ignore")
+    enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     X_cat = pd.DataFrame(enc.fit_transform(X_for_fe[cat]))
     X_cat.columns = enc.get_feature_names_out(cat)
 
@@ -415,7 +415,7 @@ def load_sparse_adult(args):
     cat = X_for_fe.select_dtypes(include=["object"]).columns.tolist()
     num = X_for_fe.select_dtypes(exclude=["object"]).columns.tolist()
 
-    enc = OneHotEncoder(sparse=False, handle_unknown="ignore")
+    enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     X_cat = pd.DataFrame(enc.fit_transform(X_for_fe[cat]))
     X_cat.columns = enc.get_feature_names_out(cat)
 

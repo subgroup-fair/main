@@ -294,6 +294,7 @@ from tqdm import tqdm
 def compute_metrics(args, data, pred_pack):
     proba = pred_pack.get("proba", None)
     pred = pred_pack.get("pred", None)
+    test_dr = pred_pack.get("test_dr", None)
     report = dict(dataset=getattr(args, "dataset", ""),
                   method=getattr(args, "method", ""),
                   seed=getattr(args, "seed", None))
@@ -362,7 +363,7 @@ def compute_metrics(args, data, pred_pack):
     # min support는 marginal fair, subgroup fair에서 min_support 이상인 것만 사용
     # n_low는 subgroup subset fair에서 subset 내부 원소 개수가 n_low 이상인 것을 사용
 
-    V_mode_list = [[1], [2], [3], [1,2], [1,2,3]]
+    V_mode_list = [[1,2,3]]
     V, V_choices = None, None
 
     print("[Performance] V counting ...")
@@ -384,7 +385,7 @@ def compute_metrics(args, data, pred_pack):
         elif len(V_mode) > 1:
             # ===== [NEW] 1~K차(또는 af_max_order까지) 모두 고려한 supIPM =====
             masks_np = _apriori_forward_unions_from_df(
-                S, T, max_order=V_mode[-1], max_cols=agg_max_cols, log_prefix="afa"
+                S, T, max_order=V_mode[-1], max_cols=agg_max_cols, log_prefix="Test_V"
             )
             if len(masks_np) == 0:
                 V, V_choices = [], []
@@ -396,7 +397,7 @@ def compute_metrics(args, data, pred_pack):
         print("=== sup_mmd_over_V, sup_w1_over_V START ===")
         if (proba is not None) and (V is not None):
             try:
-                report[f"sup_mmd_over_V_{V_mode}"] = float(sup_mmd_over_V(proba, V, min_support=n_low)) 
+                # report[f"sup_mmd_over_V_{V_mode}"] = float(sup_mmd_over_V(proba, V, min_support=n_low)) 
                 report[f"sup_w1_over_V_{V_mode}"] = float(sup_w1_over_V(proba, V, min_support=n_low))
             except Exception: report[f"sup_w1_over_V_{V_mode}"] = np.nan
         else:
@@ -415,6 +416,7 @@ def compute_metrics(args, data, pred_pack):
         print(f"[metric] worst_spd_over_V = {report[f'worst_spd_over_V_{V_mode}']}")
         print(f"[metric] mean_spd_over_V = {report[f'mean_spd_over_V_{V_mode}']}")
 
+        
 
         print("=== Weighted SPD over V START ===")
         if (proba is not None) and (V is not None):
@@ -429,6 +431,8 @@ def compute_metrics(args, data, pred_pack):
 
 
     # V랑 상관없는 것들
+    try: report[f"test_dr"] = float(test_dr)
+    except Exception: report[f"test_dr"] = np.nan
     
     print("=== accuracy START ===")
     report["accuracy"] = accuracy(y, pred) if (y is not None and pred is not None) else np.nan
@@ -449,16 +453,16 @@ def compute_metrics(args, data, pred_pack):
     print("=== supIPM(overall) END ===")
 
 
-    print("=== sup_mmd_dfcols, sup_w1_dfcols START ===")
-    if (data["type"] == "tabular") and (proba is not None) and (S is not None):
-        try: report["sup_mmd_dfcols"] = float(sup_mmd_dfcols(proba, S, min_support=min_support))
-        except Exception: report["sup_mmd_dfcols"] = np.nan
-        try: report["sup_w1_dfcols"] = float(sup_w1_dfcols(proba, S, min_support=min_support))
-        except Exception: report["sup_w1_dfcols"] = np.nan
-    else:
-        report["sup_mmd_dfcols"] = np.nan; report["sup_w1_dfcols"] = np.nan
-    print(f"[metric] sup_mmd_dfcols = {report['sup_mmd_dfcols']}")
-    print(f"[metric] sup_w1_dfcols = {report['sup_w1_dfcols']}")
+    # print("=== sup_mmd_dfcols, sup_w1_dfcols START ===")
+    # if (data["type"] == "tabular") and (proba is not None) and (S is not None):
+    #     try: report["sup_mmd_dfcols"] = float(sup_mmd_dfcols(proba, S, min_support=min_support))
+    #     except Exception: report["sup_mmd_dfcols"] = np.nan
+    #     try: report["sup_w1_dfcols"] = float(sup_w1_dfcols(proba, S, min_support=min_support))
+    #     except Exception: report["sup_w1_dfcols"] = np.nan
+    # else:
+    #     report["sup_mmd_dfcols"] = np.nan; report["sup_w1_dfcols"] = np.nan
+    # print(f"[metric] sup_mmd_dfcols = {report['sup_mmd_dfcols']}")
+    # print(f"[metric] sup_w1_dfcols = {report['sup_w1_dfcols']}")
 
 
     print("=== SPD(singleton) START ===")

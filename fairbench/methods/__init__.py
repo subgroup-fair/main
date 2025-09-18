@@ -6,11 +6,11 @@ from tqdm.auto import tqdm
 # ===== NEW: Apriori-based unions over disjoint base subgroups =====
 from ..utils.mlp import MLP, Linear
 
-from .dr import run_dr
-from .dr_subgroup_subset import run_dr_subgroup_subset
-from .dr_subgroup_subset_3q import run_dr_subgroup_subset_3q
-from .dr_subgroup_subset_random import run_dr_subgroup_subset_random
-from .gerryfair_wrapper import run_gerryfair
+# from .dr import run_dr
+# from .dr_subgroup_subset import run_dr_subgroup_subset
+# from .dr_subgroup_subset_3q import run_dr_subgroup_subset_3q
+# from .dr_subgroup_subset_random import run_dr_subgroup_subset_random
+# from .gerryfair_wrapper import run_gerryfair
 from .multicalib_wrapper import run_multicalib
 from .seq_wrapper import run_sequential
 from .reduction_wrapper import run_reduction
@@ -193,7 +193,20 @@ def _train_tabular(args, data):
     # best_f = None
 
        # --- [ADD] Early-Stop/Checkpoint 설정
-    metric = getattr(args, "early_metric", "cls_total")  # {'cls_total','cls_bce','loss_bce','acc'}
+    # metric = getattr(args, "early_metric", "cls_total")  # {'cls_total','cls_bce','loss_bce','acc'}
+
+    if args.method == "gerryfair":
+        metric = "acc"
+        validation_method = "all_select"
+    elif args.method == "reg":
+        metric = "acc"
+        validation_method = "all_select"
+    else:
+        metric = "cls_total"
+        validation_method = "all_select"
+    
+    print(f"[val] metric={metric}, strategy={validation_method}")
+    
     patience = int(getattr(args, "early_patience", 10))
     mode = "min" if metric in ("cls_total","cls_bce","loss_bce","loss") else "max"
     best_score = float("inf") if mode=="min" else -float("inf")
@@ -222,6 +235,8 @@ def _train_tabular(args, data):
                 
             pen = fair.penalty(logits, probs)
             total = cls + lam_t * pen                             # <-- NEW 1004
+            print(f"[loss] cls={cls.item():.4f}, pen={pen.item():.4f}, "
+                    f"λ={lam_t:.4f} → total={total.item():.4f}")
             # pen = fair.penalty(logits, probs)              # 스칼라
             # total = cls + fair_weight * pen
         else:
@@ -238,63 +253,69 @@ def _train_tabular(args, data):
         # ----- validation -----
         f.eval()
         with torch.no_grad():
-            logit_va = f(X_va)  
-            prob_va  = torch.sigmoid(logit_va)
-            pred_va = (prob_va >= thr).float()
-            val_acc = (pred_va == y_va).float().mean().item()
-            val_loss = loss_bce(logit_va, y_va).item()
-            bce_vec_val = per_sample_bce_vec(logit_va, y_va)       # numpy (N,)
-            if isinstance(fair, DRFair) and getattr(fair, "Ctr", None) is not None and len(V_masks_val) > 0:
-                v_unit  = fair._v_unit()
-                if 'C_val' in locals() and C_val.shape[1] == fair.Ctr.shape[1]:
-                    yv_val = (C_val @ v_unit)                      # torch (N,)
+            # 항상 한 번만 forward (다른 항목들도 여기서 재활용)
+            logit_va = f(X_va)
+
+            # 필요 플래그
+            need_prob   = metric in ("acc", "accuracy", "cls_total") or (fair_weight > 0 and metric == "cls_total")
+            need_loss   = metric in ("loss_bce", "loss", "bce", "cls_bce", "cls_total")
+            need_acc    = metric in ("acc", "accuracy")
+            need_total  = metric == "cls_total"
+            N_va = y_va.shape[0]
+
+            # 선택 계산
+            if need_prob:
+                prob_va = torch.sigmoid(logit_va)
+
+            if need_acc:
+                pred_va = (prob_va >= thr).float()
+                val_acc = (pred_va == y_va).float().mean().item()
+
+            if need_loss:
+                # BCEWithLogitsLoss(reduction='mean') 가정
+                val_loss = loss_bce(logit_va, y_va).item()
+
+            # --- 스칼라 후보들 계산 (필요한 것만) ---
+            if metric == "cls_total":
+                # 평균 BCE
+                cls_bce_s_val = float(val_loss)  # reduction='mean'이면 per-sample 평균과 동일
+                # 페어니스 스칼라 (필요할 때만)
+                if fair_weight > 0:
+                    # DRFair 등 어떤 페어니스든 penalty는 스칼라 반환이라고 가정
+                    pen_val = float(fair.penalty(logit_va, prob_va).detach().cpu().item())
+                    lam_use = lam_t
+                    # 기존 구현과 동일하게 per-sample 평균으로 맞추려면 N으로 나눠줌
+                    cls_tot_s_val = cls_bce_s_val + lam_use * (pen_val / max(1, N_va))
                 else:
-                    if len(V_masks_val) > 0:
-                        memb = torch.tensor(
-                            np.stack(V_masks_val, axis=1).astype(np.float32), device=device
-                        ).sum(dim=1)
-                        yv_val = (memb - memb.mean()) / (memb.std() + 1e-6)
-                    else:
-                        yv_val = torch.zeros_like(logit_va)
+                    lam_use = 0.0
+                    cls_tot_s_val = cls_bce_s_val
 
-                gz_val = fair.g(prob_va.unsqueeze(1)).squeeze(-1)  # torch (N,)
-                fair_vec_val = fair_vec_from_corr(yv_val, gz_val)  # numpy (N,)
-                disc_vec_val = fair_vec_val.copy()
+            elif metric == "cls_bce":
+                cls_bce_s_val = float(val_loss)
+
+            # --- 체크포인트 기준값 선택 ---
+            if metric == "cls_total":
+                cur = cls_tot_s_val
+            elif metric == "cls_bce":
+                cur = cls_bce_s_val
+            elif metric in ("loss_bce", "loss", "bce"):
+                cur = val_loss
+            elif metric in ("acc", "accuracy"):
+                cur = val_acc
             else:
-                pen_val = float(fair.penalty(logit_va, prob_va).detach().cpu().item()) if fair_weight > 0 else 0.0
-                fair_vec_val = np.full_like(bce_vec_val, fill_value=pen_val/max(1, bce_vec_val.shape[0]), dtype=float)
-                disc_vec_val = fair_vec_val.copy()
-
-            lam_use = lam_t if (fair_weight > 0) else 0.0
-            total_vec_val = cls_total_vec(bce_vec_val, fair_vec_val, lam=lam_use) # ← 스케줄 람다 사용
-
-            # 스칼라 로그
-            # disc_s_val     = float(np.mean(disc_vec_val))
-            cls_bce_s_val  = float(np.mean(bce_vec_val))
-            # cls_fair_s_val = float(np.mean(fair_vec_val) * lam_use )
-            cls_tot_s_val  = float(np.mean(total_vec_val))
-
-            # log_loss_scalar(ep, "val",   disc_s_val, cls_tot_s_val, cls_bce_s_val, cls_fair_s_val)
-            # log_loss_breakdowns(ep, "val", "disc",      disc_vec_val,  S_masks_val, V_masks_val, topk=25)
-            # log_loss_breakdowns(ep, "val", "cls_bce",   bce_vec_val,   S_masks_val, V_masks_val, topk=25)
-            # log_loss_breakdowns(ep, "val", "cls_fair",  fair_vec_val,  S_masks_val, V_masks_val, topk=25)
-            # log_loss_breakdowns(ep, "val", "cls_total", total_vec_val, S_masks_val, V_masks_val, topk=25)
-        
-        
-        # --- [ADD][CHG] 체크포인트 판단을 여기(VAL 스칼라 계산 직후)로 이동
-        if metric == "cls_total":
-            cur = cls_tot_s_val
-        elif metric == "cls_bce":
-            cur = cls_bce_s_val
-        elif metric in ("loss_bce","loss","bce"):
-            cur = val_loss
-        elif metric in ("acc","accuracy"):
-            cur = val_acc
-        else:
-            cur = cls_tot_s_val  # 안전 디폴트
+                # 안전 디폴트: cls_total 로 간주
+                cls_bce_s_val = float(val_loss)
+                if fair_weight > 0:
+                    prob_va = torch.sigmoid(logit_va) if not need_prob else prob_va
+                    pen_val = float(fair.penalty(logit_va, prob_va).detach().cpu().item())
+                    lam_use = lam_t
+                    cls_tot_s_val = cls_bce_s_val + lam_use * (pen_val / max(1, N_va))
+                else:
+                    cls_tot_s_val = cls_bce_s_val
+                cur = cls_tot_s_val
 
         improved = (cur < best_score - 1e-8) if mode=="min" else (cur > best_score + 1e-8)
-        if improved:
+        if improved and (ep > 150):
             best_score = cur
             best_epoch = ep
             best_f = {k: v_.detach().cpu().clone() for k, v_ in f.state_dict().items()}
@@ -302,10 +323,25 @@ def _train_tabular(args, data):
         else:
             no_improve += 1
 
-        # --- [ADD] 얼리스톱
-        if no_improve >= patience:
-            print(f"[EarlyStop] metric={metric}, best@ep={best_epoch}, score={best_score:.6f}")
-            break
+        
+        # === 여기만 전략에 따라 분기 ===
+        if validation_method == "early_stop":
+            if no_improve >= patience:
+                print(f"[EarlyStop] metric={metric}, best@ep={best_epoch}, score={best_score:.6f}")
+                break
+        elif validation_method == "all_select":
+            # 중단하지 않고 끝까지(예: 200ep) 돈다
+            pass
+        else:
+            # 안전 디폴트: early_stop
+            if no_improve >= patience:
+                print(f"[EarlyStop:default] metric={metric}, best@ep={best_epoch}, score={best_score:.6f}")
+                break
+
+        # # --- [ADD] 얼리스톱
+        # if no_improve >= patience:
+        #     print(f"[EarlyStop] metric={metric}, best@ep={best_epoch}, score={best_score:.6f}")
+        #     break
 
         # # ---------- TRAIN per-sample ----------
         # with torch.no_grad():
@@ -339,7 +375,9 @@ def _train_tabular(args, data):
         
 
     if best_f is not None:
-        f.load_state_dict({k: v_.to(device) for k, v_ in best_f.items()})
+        f.load_state_dict(best_f, strict=True)
+    print(f"[val] select best@ep={best_epoch} (metric={metric}, score={best_score:.6f}, mode={mode}, strategy={validation_method})")
+
 
     # ---------------- Temperature scaling + threshold 튜닝 ----------------
     with torch.no_grad():
@@ -363,9 +401,16 @@ def _train_tabular(args, data):
     with torch.no_grad():
         logit_te = f(torch.tensor(data["X_test"].values, dtype=torch.float32, device=device))
         p_test = torch.sigmoid(logit_te / T).cpu().numpy()
-    yhat = (p_test >= thr).astype(int)
-    return dict(proba=p_test, pred=yhat)
+            # === NEW: DRFair일 때 test fair loss 저장 ===
+        test_fair_loss = None
+        if isinstance(fair, DRFair) and fair_weight > 0:
+            prob_te_raw = torch.sigmoid(logit_te)                    # 온도보정 전(검증과 동일 기준)
+            pen_te = fair.penalty(logit_te, prob_te_raw)             # 스칼라 텐서
+            N_te = float(data["X_test"].shape[0])
+            test_fair_loss = float(pen_te.detach().cpu().item() / max(1.0, N_te))  # per-sample 평균
 
+    yhat = (p_test >= thr).astype(int)
+    return dict(proba=p_test, pred=yhat, test_dr=test_fair_loss) 
 
 def run_method(args, data):
     # if args.method == "dr":

@@ -7,16 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # 필요한 유틸/모듈 임포트 (프로젝트 경로에 맞춰 하나만 쓰면 됨)
-try:
-    from ..methods.dr_subgroup_subset_random import build_C_tensor  # 이미 쓰던 함수 경로
-except Exception:
-    from fairbench.utils.group_builder import build_C_tensor
+from ..methods.dr_subgroup_subset_random import build_C_tensor  # 이미 쓰던 함수 경로
+from ..methods.dr_subgroup_subset_random import Discriminator, artanh_corr  # 예시: DR에서 쓰던 것
 
-try:
-    from ..methods.dr_subgroup_subset_random import Discriminator, artanh_corr  # 예시: DR에서 쓰던 것
-except Exception:
-    # 기존에 Discriminator/ artanh_corr 가 있던 파일 경로로 바꿔주세요.
-    from fairbench.methods.dr_utils import Discriminator, artanh_corr
 
 import numpy as np, random, torch
 random.seed(0)
@@ -113,17 +106,17 @@ class DRFair(BaseFair):
             )  # shape: [N, M]
 
 
-        # [NEW] 컬럼 정규화(평균0, L2=1) → 상관 안정화, 희소성 영향 완화
-        if C.numel() > 0:
-            C = C - C.mean(dim=0, keepdim=True)
-            C = C / (C.norm(dim=0, keepdim=True) + 1e-12)
+        # # [NEW] 컬럼 정규화(평균0, L2=1) → 상관 안정화, 희소성 영향 완화
+        # if C.numel() > 0:
+        #     C = C - C.mean(dim=0, keepdim=True)
+        #     C = C / (C.norm(dim=0, keepdim=True) + 1e-12)
         self.Ctr = C
 
-        # [NEW] 하이퍼
-        self.gamma  = float(getattr(args, "fair_conf_gamma",0.5))     # 0~2 추천
-        self.margin = float(getattr(args, "fair_margin", 0.0))         # 0.0~0.03 추천
+        # # [NEW] 하이퍼
+        # self.gamma  = float(getattr(args, "fair_conf_gamma",0.5))     # 0~2 추천
+        # self.margin = float(getattr(args, "fair_margin", 0.0))         # 0.0~0.03 추천
         self.adv_steps = int(getattr(args, "fair_adv_steps", 3))
-        self.dr_clip  = float(getattr(args, "fair_dr_clip", 3.0))  # <<< ADD: 폭주 방지
+        # self.dr_clip  = float(getattr(args, "fair_dr_clip", 3.0))  # <<< ADD: 폭주 방지
 
 
         # v, g
@@ -146,19 +139,28 @@ class DRFair(BaseFair):
             v_unit = self._v_unit()
             yv = (self.Ctr @ v_unit).detach()
             gz = self.g(torch.sigmoid(logits).unsqueeze(1)).squeeze(-1).detach()
-            w  = self._conf_weight(logits).detach()
-        return {"C": self.Ctr, "yv": yv, "gz": gz, "w": w}
+        return {"C": self.Ctr, "yv": yv, "gz": gz}
 
+    # def _v_unit(self):
+    #     return self.v / (self.v.norm() + 1e-12)
     def _v_unit(self):
-        return self.v / (self.v.norm() + 1e-12)
+        v = self.v
+        v_unit = v / (v.norm(p=2) + 1e-12)
+        return v_unit
+    
+    # def _v_unit(self):
+    #     """v를 simplex 위로 정규화"""
+    #     v = self.v
+    #     v_unit = torch.softmax(v, dim=0)
+    #     return v_unit
 
-    def _conf_weight(self, logits: torch.Tensor) -> torch.Tensor:
-        # w = |sigmoid(logit) - 0.5|^gamma
-        p = torch.sigmoid(logits)
-        w = (0.5 - (p - 0.5).abs()).clamp_min(0.0).pow(self.gamma)  # 경계↑, 확신↓
+    # def _conf_weight(self, logits: torch.Tensor) -> torch.Tensor:
+    #     # w = |sigmoid(logit) - 0.5|^gamma
+    #     p = torch.sigmoid(logits)
+    #     w = (0.5 - (p - 0.5).abs()).clamp_min(0.0).pow(self.gamma)  # 경계↑, 확신↓
 
-        # w = (p - 0.5).abs().pow(self.gamma).detach()
-        return w + 1e-6  # 완전 0 방지
+    #     # w = (p - 0.5).abs().pow(self.gamma).detach()
+    #     return w + 1e-6  # 완전 0 방지
     
     def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
         """
@@ -180,13 +182,10 @@ class DRFair(BaseFair):
             v_unit = self._v_unit()
             yv = (self.Ctr @ v_unit).detach()
         gz = self.g(torch.sigmoid(logits).unsqueeze(1)).squeeze(-1)
-        w  = self._conf_weight(logits)
 
-        corr = artanh_corr(w * yv, w * gz)
-        pen = F.relu(corr.abs() - self.margin)
-        if self.dr_clip is not None and self.dr_clip > 0:
-            pen = torch.clamp(pen, max=self.dr_clip)
-        return pen
+        corr = artanh_corr(yv, gz)
+
+        return corr
 
 
     
@@ -200,8 +199,8 @@ class DRFair(BaseFair):
             v_unit = self._v_unit()
             yv = (self.Ctr @ v_unit)
             gz = self.g(torch.sigmoid(logit_det).unsqueeze(1)).squeeze(-1)
-            w = self._conf_weight(logit_det)
-            dr = artanh_corr(w * yv, w * gz)
+            # dr = artanh_corr(w * yv, w * gz)
+            dr = artanh_corr(yv, gz)
 
             self.opt_g.zero_grad()
             self.opt_v.zero_grad()
@@ -209,8 +208,8 @@ class DRFair(BaseFair):
             self.opt_g.step()
             self.opt_v.step()
 
-            with torch.no_grad():
-                self.v.copy_(self.v / (self.v.norm() + 1e-12))
+            # with torch.no_grad():
+            #     self.v.copy_(self.v / (self.v.norm() + 1e-12))
 
 
 # # === DRFair 아래에 추가: Marginal CE(=Reg) 패널티 ===
@@ -388,27 +387,14 @@ class SPFairAll(BaseFair):
         self.N, self.q = S.shape
         self.M = 1 << self.q
         # 비트 가중치 (1,2,4,...)
-        self.w = (2 ** torch.arange(self.q, device=device, dtype=torch.long)).view(1, -1)
-        self.group_id = (S * self.w).sum(dim=1)  # (N,) in [0, 2^q)
+        w = (2 ** torch.arange(self.q, device=device, dtype=torch.long)).view(1, -1)
+        self.group_id = (S * w).sum(dim=1)  # (N,) in [0, 2^q)
 
         # 하이퍼
         self.tau = 0.01  # LSE/softmax 온도(작을수록 max 근사)
         self.min_prop = 0.0  # 너무 작은 그룹 무시(비율)
         self.agg = "softmax"  # "softmax" | "max"
         self.use_alpha = True  # α_g 가중 사용 여부
-
-        
-        # ▼▼ 추가: split별 group_id 캐시
-        self.group_ids_byN = {self.N: self.group_id}
-        for key in ("S_val", "S_test"):
-            if key in data and data[key] is not None:
-                Sx = data[key]
-                Sx = Sx.values if hasattr(Sx, "values") else np.asarray(Sx)
-                Sx = torch.tensor(Sx, dtype=torch.float32, device=device)
-                Sx = (Sx > 0.5).to(torch.long)
-                if Sx.shape[1] == self.q:               # 열 개수 일치할 때만
-                    gid = (Sx * self.w).sum(dim=1)      # (Nx,)
-                    self.group_ids_byN[int(Sx.shape[0])] = gid
 
     def _aggregate(self, delta):
         if self.agg == "max":
@@ -422,19 +408,13 @@ class SPFairAll(BaseFair):
     def penalty(self, logits: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
         # probs = sigmoid(logits) 가 이미 넘어온다고 가정 (혹은 여기서 torch.sigmoid(logits))
         p = probs  # (N,)
-        N = int(p.numel())
-        # ▼ 추가: 현재 N에 맞는 group_id 고르기
-        gid = self.group_ids_byN.get(N, None)
-        if gid is None:
-            # (희귀) 대응하는 S가 없으면 보수적으로 0 반환(혹은 필요시 에러)
-            return torch.zeros((), device=probs.device, dtype=probs.dtype)
         base = p.mean()
 
         # 그룹별 합/카운트 (미분 가능한 index_add_)
         sum_p = torch.zeros(self.M, device=self.device, dtype=p.dtype)
         cnt   = torch.zeros(self.M, device=self.device, dtype=p.dtype)
-        sum_p.index_add_(0, gid, p)
-        cnt.index_add_(0, gid, torch.ones_like(p))
+        sum_p.index_add_(0, self.group_id, p)
+        cnt.index_add_(0, self.group_id, torch.ones_like(p))
 
         # 평균, 격차
         mean_g = sum_p / cnt.clamp_min(1.0)
