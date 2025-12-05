@@ -1,4 +1,3 @@
-# fairbench/utils/logging_utils.py
 from __future__ import annotations
 import logging, time, threading
 from contextlib import contextmanager
@@ -9,10 +8,9 @@ except Exception:
     torch = None
 
 def setup_logger(name: str = "fair", logfile: str | None = None, level=logging.INFO):
-    """콘솔(+선택적으로 파일) 로거 셋업."""
     log = logging.getLogger(name)
     log.setLevel(level)
-    if not log.handlers:  # 중복 핸들러 방지
+    if not log.handlers: 
         fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
         sh = logging.StreamHandler()
         sh.setFormatter(fmt)
@@ -25,7 +23,6 @@ def setup_logger(name: str = "fair", logfile: str | None = None, level=logging.I
 
 @contextmanager
 def Timer(log, label: str):
-    """with Timer(log, 'label') 로 구간 시간 측정."""
     t0 = time.time()
     log.info(f"▶ {label} ...")
     try:
@@ -34,7 +31,6 @@ def Timer(log, label: str):
         log.info(f"✔ {label} done in {time.time() - t0:.2f}s")
 
 def mem_str(device=None):
-    """CUDA 메모리 사용량 문자열."""
     if torch is None:
         return "CPU"
     try:
@@ -47,7 +43,6 @@ def mem_str(device=None):
     return "CPU"
 
 class Heartbeat:
-    """N초마다 '살아있다' 로그."""
     def __init__(self, log, secs: int):
         self.log, self.secs = log, secs
         self._stop = threading.Event()
