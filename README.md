@@ -1,7 +1,3 @@
-# Quick README
-
----
-
 ### Data
 - Adult `data/raw/adult.csv`
     - --dataset adult --sens_keys sex,race,age,marital-status --sens_thresh 0.5
